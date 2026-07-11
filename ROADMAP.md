@@ -13,5 +13,5 @@
 - [x] Add complete database and local Storage backup/restore validation.
 - [x] Lock the public RPC surface to an explicit role allowlist.
 - [x] Complete a full-history secret and license audit.
-- [ ] Add upgrade integration tests.
+- [x] Add migration upgrade and idempotence integration tests.
 - [ ] Confirm the Nuvio client custom-backend onboarding flow.

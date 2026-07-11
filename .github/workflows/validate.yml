@@ -32,6 +32,7 @@ jobs:
           sh -n tests/smoke-signup.sh
           sh -n tests/smoke-backup-restore.sh
           sh -n tests/smoke-security.sh
+          sh -n tests/smoke-upgrade.sh
           sh -n tests/smoke-workflows.sh
       - name: Validate Compose
         run: docker compose config --quiet
@@ -47,7 +48,7 @@ jobs:
           mkdir -p volumes/db/data volumes/storage
       - name: Initialize database
         run: docker compose up -d --wait db
-      - name: Verify application schema
+      - name: Verify bootstrap schema
         run: ./tests/assert-schema.sh database
       - name: Show database logs on failure
         if: failure()
@@ -63,7 +64,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Configure backend
         run: ./nuvio setup --catalog-url https://catalog.selfhost.test/manifest.json
-      - name: Start backend
+      - name: Start service dependencies
+        run: docker compose up -d --wait
+      - name: Verify migration upgrade
+        run: ./tests/smoke-upgrade.sh
+      - name: Verify backend launcher
         run: ./nuvio up
       - name: Verify application schema
         run: ./tests/assert-schema.sh
