@@ -543,6 +543,10 @@ services:
     image: supabase/supavisor:2.9.5
     restart: unless-stopped
     logging: *default-logging
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     ports:
       - 127.0.0.1:${POSTGRES_PORT}:5432
       - 127.0.0.1:${POOLER_PROXY_PORT_TRANSACTION}:6543
@@ -567,6 +571,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      RLIMIT_NOFILE: 65535
       PORT: 4000
       POSTGRES_PORT: ${POSTGRES_PORT}
       POSTGRES_HOST: ${POSTGRES_HOST}
