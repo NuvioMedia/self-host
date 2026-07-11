@@ -26,10 +26,6 @@ The public avatar bucket URL is:
 | `NuvioMedia/NuvioMobile` | Root `local.properties` or build environment variables |
 | `NuvioMedia/NuvioDesktop` | Root `local.properties` or build environment variables |
 | `NuvioMedia/NuvioWeb` | Root `local.properties`; included in Web, Tizen, and webOS builds |
-| `NuvioMedia/NuvioTVWebOS` | None; this repository points to an IPK built by `NuvioWeb` |
-| `NuvioMedia/NuvioTizen` | No backend variables; change its hosted Web app URL |
-| `NuvioMedia/NuvioTVTizenBrew` | No backend variables; change its hosted Web app URL |
-| `NuvioMedia/NuvioWebTVInstaller` | None; install a package already built with the desired backend |
 
 ## Android TV
 
@@ -149,31 +145,6 @@ To package Tizen with a properties file stored elsewhere, use:
 ```sh
 npm run package:tizen -- --env-source /absolute/path/to/local.properties
 ```
-
-## Hosted Tizen Wrappers
-
-`NuvioTizen` and `NuvioTVTizenBrew` redirect the TV to a hosted `NuvioWeb`
-deployment. They do not read Supabase settings directly.
-
-First build and deploy `NuvioWeb` with the settings above. Then replace the
-hosted app URL in these wrapper files with that deployment's HTTPS URL:
-
-- `NuvioTizen/main.js`: `hostedAppUrl`
-- `NuvioTVTizenBrew/app/main.js`: `hostedAppUrl`
-- `NuvioTVTizenBrew/app/index.html`: the refresh URL and fallback link
-
-Do not add the publishable key to a hosted wrapper. The wrapper only opens the
-configured Web deployment, whose `nuvio.env.js` contains the client settings.
-
-## webOS Metadata and WebTV Installer
-
-`NuvioTVWebOS` is package-feed metadata and has no backend environment. Its
-IPK must be built from a configured `NuvioWeb` checkout.
-
-`NuvioWebTVInstaller` also has no backend environment. It downloads a WGT or
-IPK from a release, or accepts a custom local package in its package-file
-picker. For a self-hosted deployment, select a package built from the
-configured `NuvioWeb` checkout.
 
 ## Verify the Connection
 
