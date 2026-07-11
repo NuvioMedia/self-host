@@ -1,4 +1,5 @@
 #!/bin/sh
+# Adapted from Supabase self-hosting configuration and modified for Nuvio.
 # Custom entrypoint for Kong that builds Lua expressions for request-transformer
 # and performs environment variable substitution in the declarative config.
 

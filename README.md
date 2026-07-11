@@ -9,7 +9,14 @@ user accounts, credentials, database backups, or storage objects.
 
 ## Quick Start
 
-Requirements: Docker Engine, Docker Compose v2, OpenSSL, and curl.
+Requirements: a 64-bit Linux host, Docker Engine, Docker Compose v2, Git,
+OpenSSL, and curl. All pinned images support both `linux/amd64` and
+`linux/arm64`.
+
+For the complete stack, use at least 4 GB RAM, 2 CPU cores, and 40 GB of SSD
+storage. 8 GB RAM, 4 cores, and 80 GB SSD are recommended for a production
+instance. These numbers follow [Supabase's full-stack system
+requirements](https://supabase.com/docs/guides/self-hosting/docker#system-requirements).
 
 For a local instance:
 
@@ -56,6 +63,15 @@ password in a client.
 ./nuvio down
 ```
 
+Backups contain PostgreSQL data and local Storage files. `backup` briefly pauses
+API services to capture both consistently, then starts and checks the stack
+again. Restore requires an explicit confirmation and creates a safety backup
+before changing data:
+
+```sh
+./nuvio restore backups/nuvio-20260711T120000Z-a1b2c3 --yes
+```
+
 `./nuvio down` preserves all data. There is intentionally no one-command data
 reset in the initial release.
 
@@ -74,10 +90,15 @@ Pending database migrations are applied during `up` and recorded in the private
 - Single-node Docker Compose is the only supported topology initially.
 - PostgreSQL 17 and all service images are pinned in `compose.yml`.
 - Storage uses the server filesystem by default.
+- The unauthenticated API exposes only health checks, the avatar catalog, and
+  TV login start/poll RPCs. Account and sync RPCs require a valid user session;
+  maintenance helpers are service-only.
 - Email accounts are auto-confirmed until SMTP is configured in `.env`.
 - Passkeys and phone authentication are disabled by default.
 - New profiles receive the Nuvio Catalog and OpenSubtitles addon defaults. These
-  are external services and are not hosted by this repository.
+  are external services and are not hosted by this repository. Set a different
+  catalog during setup with `--catalog-url`, or change `DEFAULT_CATALOG_URL` in
+  `.env` and run `./nuvio configure`.
 - Monitoring, Kubernetes, high availability, external S3, and managed migration
   tooling are outside the first release.
 

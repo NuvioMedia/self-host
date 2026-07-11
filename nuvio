@@ -5,6 +5,8 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 cd "$ROOT"
 
+BACKUP_HELPER_IMAGE="alpine:3.22.1"
+
 die() {
     echo "Error: $*" >&2
     exit 1
@@ -23,25 +25,50 @@ env_value() {
     grep "^$1=" .env | head -n 1 | cut -d= -f2-
 }
 
+validate_http_url() {
+    value=$1
+    label=$2
+    case "$value" in
+        ""|*[[:space:]]*) die "$label must be an http:// or https:// URL without spaces" ;;
+        http://*|https://*) ;;
+        *) die "$label must be an http:// or https:// URL" ;;
+    esac
+}
+
 set_env() {
     key=$1
     value=$2
-    if grep -q "^${key}=" .env; then
-        sed -i.old -e "s|^${key}=.*$|${key}=${value}|" .env
-        rm -f .env.old
-    else
-        printf '%s=%s\n' "$key" "$value" >> .env
+    temp_env=$(mktemp ./.env.tmp.XXXXXX)
+    found=0
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "$key="*)
+                printf '%s=%s\n' "$key" "$value"
+                found=1
+                ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < .env > "$temp_env"
+
+    if [ "$found" -eq 0 ]; then
+        printf '%s=%s\n' "$key" "$value" >> "$temp_env"
     fi
+
+    chmod 600 "$temp_env"
+    mv "$temp_env" .env
 }
 
 setup() {
     domain=""
     app_url=""
+    catalog_url=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --domain) [ $# -ge 2 ] || die "--domain needs a value"; domain=$2; shift 2 ;;
             --app-url) [ $# -ge 2 ] || die "--app-url needs a value"; app_url=$2; shift 2 ;;
+            --catalog-url) [ $# -ge 2 ] || die "--catalog-url needs a value"; catalog_url=$2; shift 2 ;;
             -h|--help) usage; exit 0 ;;
             *) die "unknown setup option: $1" ;;
         esac
@@ -54,15 +81,23 @@ setup() {
     cp .env.example .env
     sh scripts/generate-secrets.sh
 
+    if [ -n "$catalog_url" ]; then
+        validate_http_url "$catalog_url" "--catalog-url"
+        set_env DEFAULT_CATALOG_URL "$catalog_url"
+    fi
+
     if [ -n "$domain" ]; then
         domain=${domain#http://}
         domain=${domain#https://}
         domain=${domain%/}
         case "$domain" in
-            ""|*/*|*:*) die "--domain must be a hostname without scheme, path, or port" ;;
+            ""|*/*|*:*|*[!A-Za-z0-9.-]*|.*|*.|-*|*-)
+                die "--domain must be a valid hostname without scheme, path, or port"
+                ;;
         esac
 
         [ -n "$app_url" ] || app_url="https://nuvio.tv"
+        validate_http_url "$app_url" "--app-url"
         set_env COMPOSE_FILE "compose.yml:compose.production.yml"
         set_env NUVIO_DOMAIN "$domain"
         set_env SUPABASE_PUBLIC_URL "https://${domain}"
@@ -73,6 +108,7 @@ setup() {
         set_env WEBAUTHN_RP_ID "$domain"
         set_env WEBAUTHN_RP_ORIGINS "$app_url"
     elif [ -n "$app_url" ]; then
+        validate_http_url "$app_url" "--app-url"
         set_env SITE_URL "$app_url"
         set_env ADDITIONAL_REDIRECT_URLS "$app_url"
         set_env WEBAUTHN_RP_ORIGINS "$app_url"
@@ -110,6 +146,31 @@ migrate() {
     done
 }
 
+configure_instance() {
+    require_env
+    require_docker
+    db_name=$(env_value POSTGRES_DB)
+    catalog_url=$(env_value DEFAULT_CATALOG_URL 2>/dev/null || true)
+    if [ -z "$catalog_url" ]; then
+        catalog_url="https://catalog.nuvio.tv/manifest.json"
+        set_env DEFAULT_CATALOG_URL "$catalog_url"
+    fi
+
+    validate_http_url "$catalog_url" "DEFAULT_CATALOG_URL"
+
+    docker compose exec -T db psql \
+        -v ON_ERROR_STOP=1 \
+        -v "catalog_url=$catalog_url" \
+        -U supabase_admin \
+        -d "$db_name" <<'SQL'
+INSERT INTO nuvio_private.instance_settings (key, value, updated_at)
+VALUES ('default_catalog_url', :'catalog_url', now())
+ON CONFLICT (key) DO UPDATE
+SET value = excluded.value,
+    updated_at = excluded.updated_at;
+SQL
+}
+
 doctor() {
     require_env
     command -v curl >/dev/null 2>&1 || die "curl is required for health checks"
@@ -135,14 +196,159 @@ credentials() {
     echo "Studio password:   $(env_value DASHBOARD_PASSWORD)"
 }
 
-backup() {
+create_backup() {
     require_env
     require_docker
+    command -v openssl >/dev/null 2>&1 || die "openssl is required"
     mkdir -p backups
     db_name=$(env_value POSTGRES_DB)
-    target="backups/nuvio-$(date -u +%Y%m%dT%H%M%SZ).dump"
-    docker compose exec -T db pg_dump -U postgres -d "$db_name" --format=custom > "$target"
-    echo "Backup written to $target"
+    backup_id="nuvio-$(date -u +%Y%m%dT%H%M%SZ)-$(openssl rand -hex 3)"
+    target="$ROOT/backups/$backup_id"
+    mkdir -m 700 "$target"
+
+    docker compose exec -T db pg_dump \
+        -U supabase_admin \
+        -d "$db_name" \
+        --format=custom \
+        --data-only \
+        --no-owner \
+        --no-privileges \
+        --schema=public \
+        --schema=auth \
+        --schema=storage \
+        --schema=nuvio_private \
+        --schema=nuvio_migrations \
+        > "$target/database.dump"
+
+    host_uid=$(id -u)
+    host_gid=$(id -g)
+    docker run --rm \
+        -e HOST_UID="$host_uid" \
+        -e HOST_GID="$host_gid" \
+        -v "$ROOT/volumes/storage:/source:ro,z" \
+        -v "$target:/backup:z" \
+        "$BACKUP_HELPER_IMAGE" \
+        sh -c 'tar -czf /backup/storage.tar.gz -C /source . && chown "$HOST_UID:$HOST_GID" /backup/storage.tar.gz'
+
+    git_commit=$(git rev-parse HEAD 2>/dev/null || printf 'unknown')
+    migration_count=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select count(*) from nuvio_migrations.schema_migrations")
+    {
+        printf 'FORMAT_VERSION=1\n'
+        printf 'CREATED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'GIT_COMMIT=%s\n' "$git_commit"
+        printf 'MIGRATION_COUNT=%s\n' "$migration_count"
+    } > "$target/manifest.env"
+
+    (
+        cd "$target"
+        sha256sum database.dump storage.tar.gz manifest.env > SHA256SUMS
+    )
+    chmod 600 "$target"/*
+
+    LAST_BACKUP_PATH="$target"
+}
+
+backup() {
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+    stop_writers
+    trap 'docker compose up -d >/dev/null 2>&1 || true' 0 1 2 15
+    create_backup
+    docker compose up -d --wait
+    trap - 0 1 2 15
+    doctor
+    echo "Backup written to $LAST_BACKUP_PATH"
+}
+
+stop_writers() {
+    services=$(docker compose config --services | awk '$0 != "db" { print }')
+    if [ -n "$services" ]; then
+        # shellcheck disable=SC2086
+        docker compose stop $services
+    fi
+}
+
+restore() {
+    require_env
+    require_docker
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required"
+
+    [ $# -ge 1 ] || die "restore needs a backup directory"
+    backup_dir=$1
+    shift
+    [ "${1:-}" = "--yes" ] || die "restore is destructive; rerun with: ./nuvio restore $backup_dir --yes"
+
+    case "$backup_dir" in
+        /*) ;;
+        *) backup_dir="$ROOT/$backup_dir" ;;
+    esac
+
+    [ -d "$backup_dir" ] || die "backup directory not found: $backup_dir"
+    for file in database.dump storage.tar.gz manifest.env SHA256SUMS; do
+        [ -f "$backup_dir/$file" ] || die "backup is missing $file"
+    done
+
+    format_version=$(grep '^FORMAT_VERSION=' "$backup_dir/manifest.env" | cut -d= -f2-)
+    [ "$format_version" = "1" ] || die "unsupported backup format: ${format_version:-unknown}"
+    (
+        cd "$backup_dir"
+        sha256sum -c SHA256SUMS
+    )
+
+    backup_migration_count=$(grep '^MIGRATION_COUNT=' "$backup_dir/manifest.env" | cut -d= -f2-)
+    case "$backup_migration_count" in
+        ""|*[!0-9]*) die "backup manifest has an invalid migration count" ;;
+    esac
+    db_name=$(env_value POSTGRES_DB)
+    current_migration_count=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select count(*) from nuvio_migrations.schema_migrations")
+    if [ "$backup_migration_count" -gt "$current_migration_count" ]; then
+        die "backup uses a newer database schema; update this checkout before restoring"
+    fi
+
+    stop_writers
+    trap 'docker compose up -d >/dev/null 2>&1 || true' 0 1 2 15
+    echo "Creating a safety backup before restore..."
+    create_backup
+    trap - 0 1 2 15
+    echo "Safety backup written to $LAST_BACKUP_PATH"
+
+    docker compose exec -T db psql -v ON_ERROR_STOP=1 -U supabase_admin -d "$db_name" <<'SQL'
+DO $$
+DECLARE
+    table_list text;
+BEGIN
+    SELECT string_agg(format('%I.%I', schemaname, tablename), ', ')
+    INTO table_list
+    FROM pg_tables
+    WHERE schemaname IN ('public', 'auth', 'storage', 'nuvio_private', 'nuvio_migrations');
+
+    IF table_list IS NOT NULL THEN
+        EXECUTE 'TRUNCATE TABLE ' || table_list || ' RESTART IDENTITY CASCADE';
+    END IF;
+END
+$$;
+SQL
+
+    docker compose exec -T db pg_restore \
+        -U supabase_admin \
+        -d "$db_name" \
+        --data-only \
+        --disable-triggers \
+        --no-owner \
+        --no-privileges \
+        --exit-on-error \
+        < "$backup_dir/database.dump"
+
+    docker run --rm \
+        -v "$ROOT/volumes/storage:/target:z" \
+        -v "$backup_dir:/backup:ro,z" \
+        "$BACKUP_HELPER_IMAGE" \
+        sh -c 'find /target -mindepth 1 -delete && tar -xzf /backup/storage.tar.gz -C /target'
+
+    docker compose up -d --wait
+    migrate
+    configure_instance
+    doctor
+    echo "Restore complete. Safety backup: $LAST_BACKUP_PATH"
 }
 
 usage() {
@@ -150,16 +356,19 @@ usage() {
 Usage: ./nuvio <command>
 
 Commands:
-  setup [--domain HOST] [--app-url URL]  Configure a local or HTTPS deployment
+  setup [--domain HOST] [--app-url URL] [--catalog-url URL]
+                                          Configure a local or HTTPS deployment
   up                                      Start, migrate, and verify the stack
   down                                    Stop the stack without deleting data
   restart                                 Restart the stack
   status                                  Show service status
   logs [SERVICE]                          Follow logs
   migrate                                 Apply pending Nuvio migrations
+  configure                               Apply instance settings from .env
   doctor                                  Check Auth, REST, Storage, and Functions
   credentials                             Show client and Studio connection details
-  backup                                  Create a local database backup
+  backup                                  Back up database and local Storage
+  restore BACKUP_DIR --yes                Restore database and local Storage
   pull                                    Pull pinned container images
 EOF
 }
@@ -174,16 +383,19 @@ case "$command" in
         require_docker
         docker compose up -d --wait
         migrate
+        configure_instance
         doctor
         ;;
     down) require_env; require_docker; docker compose down "$@" ;;
     restart) require_env; require_docker; docker compose restart "$@" ;;
     status) require_env; require_docker; docker compose ps "$@" ;;
     logs) require_env; require_docker; docker compose logs -f "$@" ;;
-    migrate) migrate ;;
+    migrate) migrate; configure_instance ;;
+    configure) configure_instance ;;
     doctor) doctor ;;
     credentials) credentials ;;
     backup) backup ;;
+    restore) restore "$@" ;;
     pull) require_env; require_docker; docker compose pull ;;
     help|-h|--help) usage ;;
     *) usage >&2; exit 1 ;;

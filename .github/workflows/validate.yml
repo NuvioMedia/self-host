@@ -12,6 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Scan Git history for secrets
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro"
+          ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git --no-banner --redact /repo
       - name: Generate test configuration
         run: |
           cp .env.example .env
@@ -23,6 +30,9 @@ jobs:
           sh -n scripts/generate-secrets.sh
           sh -n tests/assert-schema.sh
           sh -n tests/smoke-signup.sh
+          sh -n tests/smoke-backup-restore.sh
+          sh -n tests/smoke-security.sh
+          sh -n tests/smoke-workflows.sh
       - name: Validate Compose
         run: docker compose config --quiet
 
@@ -42,6 +52,32 @@ jobs:
       - name: Show database logs on failure
         if: failure()
         run: docker compose logs db
+      - name: Stop services
+        if: always()
+        run: docker compose down --volumes
+
+  full-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure backend
+        run: ./nuvio setup --catalog-url https://catalog.selfhost.test/manifest.json
+      - name: Start backend
+        run: ./nuvio up
+      - name: Verify application schema
+        run: ./tests/assert-schema.sh
+      - name: Verify signup defaults
+        run: ./tests/smoke-signup.sh
+      - name: Verify client workflows
+        run: ./tests/smoke-workflows.sh
+      - name: Verify API security boundaries
+        run: ./tests/smoke-security.sh
+      - name: Verify backup and restore
+        run: ./tests/smoke-backup-restore.sh
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs
       - name: Stop services
         if: always()
         run: docker compose down --volumes

@@ -1,3 +1,4 @@
+// Adapted from Supabase self-hosting configuration and modified for Nuvio.
 import * as jose from 'https://deno.land/x/jose@v4.14.4/index.ts'
 
 console.log('main function started')

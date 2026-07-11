@@ -1,3 +1,4 @@
+# Adapted from Supabase self-hosting configuration and modified for Nuvio.
 {:ok, _} = Application.ensure_all_started(:supavisor)
 
 {:ok, version} =

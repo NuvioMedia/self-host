@@ -15,6 +15,10 @@ reproduction steps, and impact.
 - Configure SMTP before relying on password recovery email.
 - Run `./nuvio doctor` after installs and upgrades.
 - Create and test backups before upgrading production instances.
+- Treat backup directories as sensitive: they contain account records and files.
+- Keep the automatic safety backup until a restore has been verified.
+- Keep `ANON_KEY` in clients, but never expose `SERVICE_ROLE_KEY`; maintenance
+  RPCs are intentionally executable only by the service role.
 
 The setup enables email auto-confirmation for a low-friction initial deployment.
 Operators who configure SMTP should set `ENABLE_EMAIL_AUTOCONFIRM=false`.

@@ -1,3 +1,4 @@
+-- Adapted from Supabase self-hosting configuration and modified for Nuvio.
 BEGIN;
   -- Create pg_net extension
   CREATE EXTENSION IF NOT EXISTS pg_net SCHEMA extensions;

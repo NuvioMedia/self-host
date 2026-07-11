@@ -48,4 +48,11 @@ user_id=$(query "select id from auth.users where email = '$email'")
 addon_count=$(query "select count(*) from public.addons where user_id = '$user_id'")
 [ "$addon_count" = "2" ] || { echo "Expected 2 default addons, got $addon_count" >&2; exit 1; }
 
+expected_catalog_url=$(env_value DEFAULT_CATALOG_URL)
+actual_catalog_url=$(query "select url from public.addons where user_id = '$user_id' and name = 'Nuvio Catalog Addon'")
+[ "$actual_catalog_url" = "$expected_catalog_url" ] || {
+    echo "Expected catalog URL $expected_catalog_url, got $actual_catalog_url" >&2
+    exit 1
+}
+
 echo "OK  signup and default addons"

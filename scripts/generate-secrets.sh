@@ -15,12 +15,25 @@ base64_url_encode() {
 set_env() {
     key=$1
     value=$2
-    if grep -q "^${key}=" .env; then
-        sed -i.old -e "s|^${key}=.*$|${key}=${value}|" .env
-        rm -f .env.old
-    else
-        printf '%s=%s\n' "$key" "$value" >> .env
+    temp_env=$(mktemp ./.env.tmp.XXXXXX)
+    found=0
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "$key="*)
+                printf '%s=%s\n' "$key" "$value"
+                found=1
+                ;;
+            *) printf '%s\n' "$line" ;;
+        esac
+    done < .env > "$temp_env"
+
+    if [ "$found" -eq 0 ]; then
+        printf '%s=%s\n' "$key" "$value" >> "$temp_env"
     fi
+
+    chmod 600 "$temp_env"
+    mv "$temp_env" .env
 }
 
 jwt_secret=$(openssl rand -hex 32)

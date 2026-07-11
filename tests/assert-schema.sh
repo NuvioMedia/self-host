@@ -26,5 +26,9 @@ if [ "${1:-full}" = "database" ]; then
 else
     assert_count "storage policies" 1 "$(query "select count(*) from pg_policies where schemaname='storage' and tablename='objects' and policyname='Public avatar read access'")"
     assert_count "storage buckets" 2 "$(query "select count(*) from storage.buckets where id in ('avatars', 'covers')")"
-    assert_count "Nuvio migrations" 3 "$(query "select count(*) from nuvio_migrations.schema_migrations")"
+    assert_count "Nuvio migrations" 5 "$(query "select count(*) from nuvio_migrations.schema_migrations")"
+    assert_count "private settings" 1 "$(query "select count(*) from nuvio_private.instance_settings where key='default_catalog_url'")"
+    assert_count "anonymous RPC allowlist" 4 "$(query "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and has_function_privilege('anon', p.oid, 'EXECUTE')")"
+    assert_count "exposed internal RPCs" 0 "$(query "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('cleanup_anonymous_users','consume_tv_login_session','emit_sync_invalidation','nuvio_default_catalog_url') and (has_function_privilege('anon', p.oid, 'EXECUTE') or has_function_privilege('authenticated', p.oid, 'EXECUTE'))")"
+    assert_count "unhardened security definer functions" 0 "$(query "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.prosecdef and coalesce(array_to_string(p.proconfig, ','), '') not like 'search_path=pg_catalog, public, auth, extensions, pg_temp%'")"
 fi

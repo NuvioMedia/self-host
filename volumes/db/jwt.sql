@@ -1,3 +1,4 @@
+-- Adapted from Supabase self-hosting configuration and modified for Nuvio.
 \set jwt_secret `echo "$JWT_SECRET"`
 \set jwt_exp `echo "$JWT_EXP"`
 

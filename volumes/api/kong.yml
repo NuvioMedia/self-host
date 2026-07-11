@@ -1,3 +1,4 @@
+# Adapted from Supabase self-hosting configuration and modified for Nuvio.
 _format_version: '2.1'
 _transform: true
 
