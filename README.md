@@ -65,6 +65,9 @@ The publishable key is intended for client applications. Never place the
 service-role key, Supabase secret key, database password, or Studio password in
 a client.
 
+See [Configure Nuvio Clients](docs/client-configuration.md) for the exact
+settings used by Android TV, Mobile, Desktop, Web, Tizen, and webOS builds.
+
 ## Commands
 
 | Command | Description |
