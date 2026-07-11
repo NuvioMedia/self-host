@@ -1,24 +1,22 @@
 # Nuvio Self-Hosted
 
-Run an empty, private Nuvio backend on your own Linux server. The stack packages
-Nuvio's PostgreSQL schema, Row Level Security policies, RPC functions, Edge
-Functions, Auth, Storage, Realtime, and Studio on top of self-hosted Supabase.
+Run the Nuvio backend on a Linux server with Docker Compose. The deployment
+includes PostgreSQL, authentication, the Nuvio sync API, Storage, Realtime,
+Edge Functions, Studio, and automatic HTTPS.
 
-This repository is an early private beta. It contains no Nuvio production data,
-user accounts, credentials, database backups, or storage objects.
+## Requirements
+
+- A 64-bit Linux host using `amd64` or `arm64`
+- Docker Engine with Docker Compose v2
+- Git, OpenSSL, and curl
+- A domain pointed at the server for an HTTPS deployment
+
+Use at least 4 GB RAM, 2 CPU cores, and 40 GB SSD storage. For a production
+server, 8 GB RAM, 4 cores, and 80 GB SSD storage are recommended.
 
 ## Quick Start
 
-Requirements: a 64-bit Linux host, Docker Engine, Docker Compose v2, Git,
-OpenSSL, and curl. All pinned images support both `linux/amd64` and
-`linux/arm64`.
-
-For the complete stack, use at least 4 GB RAM, 2 CPU cores, and 40 GB of SSD
-storage. 8 GB RAM, 4 cores, and 80 GB SSD are recommended for a production
-instance. These numbers follow [Supabase's full-stack system
-requirements](https://supabase.com/docs/guides/self-hosting/docker#system-requirements).
-
-For a local instance:
+Clone and start a local deployment:
 
 ```sh
 git clone https://github.com/NuvioMedia/nuvio-self-hosted
@@ -28,85 +26,131 @@ cd nuvio-self-hosted
 ./nuvio credentials
 ```
 
-The API and Studio will be available at `http://localhost:8000`. Studio is
-protected by the generated username and password shown by `./nuvio credentials`.
+The backend and Studio are available at `http://localhost:8000`. Open that URL
+in a browser and sign in with the Studio username and password printed by
+`./nuvio credentials`.
 
-For an internet-facing server, point a DNS record at the server and open ports
-80 and 443 before starting:
+## HTTPS Deployment
+
+Create an `A` or `AAAA` DNS record for the backend, allow inbound TCP ports 80
+and 443, then run:
 
 ```sh
 ./nuvio setup --domain backend.example.com --app-url https://nuvio.tv
 ./nuvio up
+./nuvio credentials
 ```
 
-Caddy obtains and renews HTTPS certificates automatically. The database and
-connection-pooler ports remain bound to localhost.
+Caddy obtains and renews the TLS certificate. PostgreSQL and its connection
+pooler remain bound to localhost.
+
+`--app-url` configures the allowed authentication redirect origin. To use a
+different default Nuvio catalog, add `--catalog-url` during setup:
+
+```sh
+./nuvio setup \
+  --domain backend.example.com \
+  --app-url https://nuvio.tv \
+  --catalog-url https://catalog.example.com/manifest.json
+```
 
 ## Connect Nuvio
 
-The Nuvio client needs two values from `./nuvio credentials`:
+Configure the Nuvio client with the two values shown by `./nuvio credentials`:
 
-- Backend URL
-- Publishable key
+- **Backend URL**
+- **Publishable key**
 
-The publishable key is the legacy Supabase `anon` key and is safe to place in a
-client. Never place `SERVICE_ROLE_KEY`, `SUPABASE_SECRET_KEY`, or the database
-password in a client.
+The publishable key is intended for client applications. Never place the
+service-role key, Supabase secret key, database password, or Studio password in
+a client.
 
-## Operations
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `./nuvio setup` | Generate secrets and configure the deployment |
+| `./nuvio up` | Start services, apply migrations, and run health checks |
+| `./nuvio down` | Stop services while preserving data |
+| `./nuvio restart` | Restart all services |
+| `./nuvio status` | Show service status |
+| `./nuvio logs [SERVICE]` | Follow logs for all services or one service |
+| `./nuvio doctor` | Check Auth, REST, Storage, and Edge Functions |
+| `./nuvio credentials` | Show the backend, client, and Studio credentials |
+| `./nuvio migrate` | Apply pending database migrations |
+| `./nuvio configure` | Apply instance settings from `.env` |
+| `./nuvio backup` | Back up PostgreSQL data and local Storage files |
+| `./nuvio restore BACKUP --yes` | Restore a backup after creating a safety backup |
+| `./nuvio pull` | Pull the configured container images |
+
+## Configuration
+
+`./nuvio setup` creates an ignored `.env` file with unique deployment secrets.
+Common settings include:
+
+| Setting | Purpose |
+| --- | --- |
+| `DEFAULT_CATALOG_URL` | Catalog added to new Nuvio profiles |
+| `SITE_URL` | Default authentication redirect URL |
+| `ADDITIONAL_REDIRECT_URLS` | Additional allowed authentication redirects |
+| `ENABLE_EMAIL_AUTOCONFIRM` | Automatically confirm new email accounts |
+| `SMTP_*` | SMTP server and sender configuration |
+| `KONG_HTTP_PORT` | Local backend and Studio port |
+| `POSTGRES_PORT` | Local PostgreSQL session-pooler port |
+| `POOLER_PROXY_PORT_TRANSACTION` | Local PostgreSQL transaction-pooler port |
+
+After changing `DEFAULT_CATALOG_URL`, run `./nuvio configure`. After changing a
+service setting, run `./nuvio up`.
+
+## Backups
+
+Create a backup with:
 
 ```sh
-./nuvio status
-./nuvio logs auth
-./nuvio doctor
 ./nuvio backup
-./nuvio down
 ```
 
-Backups contain PostgreSQL data and local Storage files. `backup` briefly pauses
-API services to capture both consistently, then starts and checks the stack
-again. Restore requires an explicit confirmation and creates a safety backup
-before changing data:
+The command briefly stops API services, captures PostgreSQL and local Storage
+consistently, restarts the stack, and runs health checks. Backups are written to
+`backups/` with a manifest and checksums.
+
+Restore a backup directory with:
 
 ```sh
 ./nuvio restore backups/nuvio-20260711T120000Z-a1b2c3 --yes
 ```
 
-`./nuvio down` preserves all data. There is intentionally no one-command data
-reset in the initial release.
+Restore verifies checksums and creates a safety backup before replacing data.
 
-To update after pulling a new release:
+## Updating
 
 ```sh
+git pull --ff-only
 ./nuvio pull
 ./nuvio up
 ```
 
-Pending database migrations are applied during `up` and recorded in the private
-`nuvio_migrations` schema.
+`./nuvio up` applies pending migrations before checking the deployment.
 
-## Defaults And Boundaries
+## Data
 
-- Single-node Docker Compose is the only supported topology initially.
-- PostgreSQL 17 and all service images are pinned in `compose.yml`.
-- Storage uses the server filesystem by default.
-- The unauthenticated API exposes only health checks, the avatar catalog, and
-  TV login start/poll RPCs. Account and sync RPCs require a valid user session;
-  maintenance helpers are service-only.
-- Email accounts are auto-confirmed until SMTP is configured in `.env`.
-- Passkeys and phone authentication are disabled by default.
-- New profiles receive the Nuvio Catalog and OpenSubtitles addon defaults. These
-  are external services and are not hosted by this repository. Set a different
-  catalog during setup with `--catalog-url`, or change `DEFAULT_CATALOG_URL` in
-  `.env` and run `./nuvio configure`.
-- Monitoring, Kubernetes, high availability, external S3, and managed migration
-  tooling are outside the first release.
+- PostgreSQL data: `volumes/db/data/`
+- Storage files: `volumes/storage/`
+- Backups: `backups/`
+- Deployment configuration and secrets: `.env`
+
+`./nuvio down` preserves these files.
 
 ## Security
 
-`./nuvio setup` generates unique secrets and writes them to the ignored `.env`
-file with mode `0600`. Review [SECURITY.md](SECURITY.md) before exposing a server.
+Review [SECURITY.md](SECURITY.md) before exposing the backend to the internet.
+
+## Architecture
+
+See [docs/architecture.md](docs/architecture.md) for the service layout and
+request flow.
 
 ## License
 
-Licensed under Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Licensed under the Apache License 2.0. See [LICENSE](LICENSE) and
+[NOTICE](NOTICE).
