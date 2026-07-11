@@ -14,7 +14,7 @@ Requirements: Docker Engine, Docker Compose v2, OpenSSL, and curl.
 For a local instance:
 
 ```sh
-git clone https://github.com/tapframe/nuvio-self-hosted
+git clone https://github.com/NuvioMedia/nuvio-self-hosted
 cd nuvio-self-hosted
 ./nuvio setup
 ./nuvio up
