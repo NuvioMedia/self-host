@@ -32,23 +32,22 @@ The public avatar bucket URL is:
 In the root of `NuvioTV`, add these values to `local.properties`:
 
 ```properties
+SELF_HOSTED=true
 NUVIO_SUPABASE_URL=<BACKEND_URL>
 NUVIO_SUPABASE_ANON_KEY=<PUBLISHABLE_KEY>
 NUVIO_SUPABASE_FALLBACK_URL=
 NUVIO_REALTIME_SYNC_ENABLED=true
 AVATAR_PUBLIC_BASE_URL=<BACKEND_URL>/storage/v1/object/public/avatars
-TV_LOGIN_WEB_BASE_URL=https://app.example.com/tv-login
 ```
 
 The current Gradle build reads the `NUVIO_SUPABASE_*` names shown above. Debug
-builds give `local.dev.properties` precedence for backend values, and read
-`TV_LOGIN_WEB_BASE_URL` from that file rather than `local.properties`. When
-building a debug APK, put the same client settings in `local.dev.properties`
-and remove any values for a different backend.
+builds give `local.dev.properties` precedence for backend values. When building
+a debug APK, put the same client settings in `local.dev.properties` and remove
+any values for a different backend.
 
-`TV_LOGIN_WEB_BASE_URL` is used only for browser-based QR sign-in. It must point
-to a compatible `/tv-login` page connected to this same backend; it is not the
-backend URL. The backend validates that the path contains `/tv-login`.
+`SELF_HOSTED=true` switches NuvioTV to direct email and password sign-in. A
+self-hosted build does not use QR sign-in and does not need
+`TV_LOGIN_WEB_BASE_URL`.
 
 Rebuild the client after changing the file:
 
@@ -114,10 +113,10 @@ TV_LOGIN_REDIRECT_BASE_URL=https://app.example.com/tv-login
 AVATAR_PUBLIC_BASE_URL=<BACKEND_URL>/storage/v1/object/public/avatars
 ```
 
-`TV_LOGIN_REDIRECT_BASE_URL` has the same QR sign-in requirement as the Android
-TV setting: it must be a compatible `/tv-login` page using the same backend.
-The avatar setting is optional for this client because it can derive the URL
-from `SUPABASE_URL`, but setting it explicitly keeps all TV builds consistent.
+`TV_LOGIN_REDIRECT_BASE_URL` must be a compatible `/tv-login` page using the
+same backend. The avatar setting is optional for this client because it can
+derive the URL from `SUPABASE_URL`, but setting it explicitly keeps all TV
+builds consistent.
 
 Build the browser app:
 
@@ -156,5 +155,6 @@ Before testing a client, check the backend:
 
 Then confirm that the rebuilt client can create or sign in to an account,
 create a profile, load avatars, and synchronize a change between two clients.
-For TV clients, also test QR sign-in when a matching `/tv-login` page is
-configured.
+For NuvioTV, confirm that direct email and password sign-in is shown instead of
+QR sign-in. For Web TV builds, also test QR sign-in when a matching `/tv-login`
+page is configured.
