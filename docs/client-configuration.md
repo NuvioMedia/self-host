@@ -109,14 +109,13 @@ Edit `local.properties`:
 ```properties
 SUPABASE_URL=<BACKEND_URL>
 SUPABASE_ANON_KEY=<PUBLISHABLE_KEY>
-TV_LOGIN_REDIRECT_BASE_URL=https://app.example.com/tv-login
 AVATAR_PUBLIC_BASE_URL=<BACKEND_URL>/storage/v1/object/public/avatars
 ```
 
-`TV_LOGIN_REDIRECT_BASE_URL` must be a compatible `/tv-login` page using the
-same backend. The avatar setting is optional for this client because it can
-derive the URL from `SUPABASE_URL`, but setting it explicitly keeps all TV
-builds consistent.
+Self-hosted Web, Tizen, and webOS builds use direct email and password sign-in,
+so no TV login redirect URL is needed. The avatar setting is optional because
+the client can derive the URL from `SUPABASE_URL`, but setting it explicitly
+keeps all TV builds consistent.
 
 Build the browser app:
 
@@ -155,6 +154,5 @@ Before testing a client, check the backend:
 
 Then confirm that the rebuilt client can create or sign in to an account,
 create a profile, load avatars, and synchronize a change between two clients.
-For NuvioTV, confirm that direct email and password sign-in is shown instead of
-QR sign-in. For Web TV builds, also test QR sign-in when a matching `/tv-login`
-page is configured.
+For self-hosted TV clients, confirm that direct email and password sign-in is
+available.
