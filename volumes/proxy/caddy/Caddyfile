@@ -1,0 +1,27 @@
+{
+	admin off
+}
+
+{$NUVIO_DOMAIN} {
+	encode zstd gzip
+
+	@health path /health /healthz
+	handle @health {
+		header Content-Type "application/json; charset=utf-8"
+		respond `{"service":"nuvio-backend","status":"ok"}` 200
+	}
+
+	@tv_login_public path /rest/v1/rpc/start_tv_login_session /rest/v1/rpc/poll_tv_login_session /functions/v1/tv-logins-exchange
+	handle @tv_login_public {
+		reverse_proxy kong:8000 {
+			header_up apikey {$ANON_KEY}
+			header_up Authorization "Bearer {$ANON_KEY}"
+		}
+	}
+
+	handle {
+		reverse_proxy kong:8000
+	}
+
+	header -Server
+}

@@ -1,0 +1,47 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate test configuration
+        run: |
+          cp .env.example .env
+          ./scripts/generate-secrets.sh
+          mkdir -p volumes/db/data volumes/storage
+      - name: Validate shell syntax
+        run: |
+          sh -n nuvio
+          sh -n scripts/generate-secrets.sh
+          sh -n tests/assert-schema.sh
+          sh -n tests/smoke-signup.sh
+      - name: Validate Compose
+        run: docker compose config --quiet
+
+  database-bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate test configuration
+        run: |
+          cp .env.example .env
+          ./scripts/generate-secrets.sh
+          mkdir -p volumes/db/data volumes/storage
+      - name: Initialize database
+        run: docker compose up -d --wait db
+      - name: Verify application schema
+        run: ./tests/assert-schema.sh database
+      - name: Show database logs on failure
+        if: failure()
+        run: docker compose logs db
+      - name: Stop services
+        if: always()
+        run: docker compose down --volumes

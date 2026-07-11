@@ -1,0 +1,28 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.10.0-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      kong:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NUVIO_DOMAIN: ${NUVIO_DOMAIN}
+      ANON_KEY: ${ANON_KEY}
+    volumes:
+      - ./volumes/proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,8 @@
+.env
+.env.before-*
+backups/
+volumes/db/data/
+volumes/storage/
+*.dump
+*.sql.gz
+.DS_Store

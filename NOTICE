@@ -1,0 +1,12 @@
+Nuvio Self-Hosted
+Copyright 2026 Tapframe
+
+This distribution includes configuration derived from the Supabase self-hosted
+Docker distribution, licensed under the Apache License, Version 2.0.
+
+The secret-generation approach includes portions derived from work by Inder
+Singh, also licensed under the Apache License, Version 2.0:
+https://github.com/singh-inder/supabase-automated-self-host
+
+Individual container images and runtime dependencies retain their respective
+copyright and license terms.

@@ -1,0 +1,190 @@
+#!/bin/sh
+
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+cd "$ROOT"
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+require_env() {
+    [ -f .env ] || die "not configured; run ./nuvio setup first"
+}
+
+require_docker() {
+    command -v docker >/dev/null 2>&1 || die "Docker is required"
+    docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
+}
+
+env_value() {
+    grep "^$1=" .env | head -n 1 | cut -d= -f2-
+}
+
+set_env() {
+    key=$1
+    value=$2
+    if grep -q "^${key}=" .env; then
+        sed -i.old -e "s|^${key}=.*$|${key}=${value}|" .env
+        rm -f .env.old
+    else
+        printf '%s=%s\n' "$key" "$value" >> .env
+    fi
+}
+
+setup() {
+    domain=""
+    app_url=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --domain) [ $# -ge 2 ] || die "--domain needs a value"; domain=$2; shift 2 ;;
+            --app-url) [ $# -ge 2 ] || die "--app-url needs a value"; app_url=$2; shift 2 ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "unknown setup option: $1" ;;
+        esac
+    done
+
+    [ ! -f .env ] || die ".env already exists; setup will not overwrite it"
+    command -v openssl >/dev/null 2>&1 || die "openssl is required"
+    require_docker
+
+    cp .env.example .env
+    sh scripts/generate-secrets.sh
+
+    if [ -n "$domain" ]; then
+        domain=${domain#http://}
+        domain=${domain#https://}
+        domain=${domain%/}
+        case "$domain" in
+            ""|*/*|*:*) die "--domain must be a hostname without scheme, path, or port" ;;
+        esac
+
+        [ -n "$app_url" ] || app_url="https://nuvio.tv"
+        set_env COMPOSE_FILE "compose.yml:compose.production.yml"
+        set_env NUVIO_DOMAIN "$domain"
+        set_env SUPABASE_PUBLIC_URL "https://${domain}"
+        set_env API_EXTERNAL_URL "https://${domain}"
+        set_env SITE_URL "$app_url"
+        set_env ADDITIONAL_REDIRECT_URLS "$app_url"
+        set_env MAILER_EXTERNAL_HOSTS "$domain"
+        set_env WEBAUTHN_RP_ID "$domain"
+        set_env WEBAUTHN_RP_ORIGINS "$app_url"
+    elif [ -n "$app_url" ]; then
+        set_env SITE_URL "$app_url"
+        set_env ADDITIONAL_REDIRECT_URLS "$app_url"
+        set_env WEBAUTHN_RP_ORIGINS "$app_url"
+    fi
+
+    mkdir -p volumes/db/data volumes/storage backups
+    chmod 700 volumes/db/data
+    docker compose config --quiet
+
+    echo ""
+    echo "Nuvio backend configured."
+    echo "Start it with: ./nuvio up"
+}
+
+migrate() {
+    require_env
+    require_docker
+    db_name=$(env_value POSTGRES_DB)
+
+    for migration in database/migrations/*.sql; do
+        name=$(basename "$migration")
+        version=${name%%_*}
+        table_exists=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select to_regclass('nuvio_migrations.schema_migrations') is not null" 2>/dev/null || true)
+        applied="f"
+        if [ "$table_exists" = "t" ]; then
+            applied=$(docker compose exec -T db psql -U supabase_admin -d "$db_name" -Atc "select exists(select 1 from nuvio_migrations.schema_migrations where version = '$version')" 2>/dev/null || true)
+        fi
+
+        if [ "$applied" = "t" ]; then
+            continue
+        fi
+
+        echo "Applying $name"
+        docker compose exec -T db psql -v ON_ERROR_STOP=1 -U supabase_admin -d "$db_name" < "$migration"
+    done
+}
+
+doctor() {
+    require_env
+    command -v curl >/dev/null 2>&1 || die "curl is required for health checks"
+    public_url=$(env_value SUPABASE_PUBLIC_URL)
+    anon_key=$(env_value ANON_KEY)
+
+    curl -fsS -o /dev/null -H "apikey: $anon_key" "$public_url/auth/v1/health"
+    echo "OK  Auth"
+    curl -fsS -o /dev/null -X POST -H "apikey: $anon_key" -H "Authorization: Bearer $anon_key" "$public_url/rest/v1/rpc/health_ping"
+    echo "OK  Database and REST API"
+    curl -fsS -o /dev/null -H "apikey: $anon_key" "$public_url/storage/v1/status"
+    echo "OK  Storage"
+    curl -fsS -o /dev/null -H "apikey: $anon_key" -H "Authorization: Bearer $anon_key" "$public_url/functions/v1/health-check"
+    echo "OK  Edge Functions"
+}
+
+credentials() {
+    require_env
+    echo "Backend URL:       $(env_value SUPABASE_PUBLIC_URL)"
+    echo "Publishable key:   $(env_value ANON_KEY)"
+    echo "Studio URL:        $(env_value SUPABASE_PUBLIC_URL)"
+    echo "Studio username:   $(env_value DASHBOARD_USERNAME)"
+    echo "Studio password:   $(env_value DASHBOARD_PASSWORD)"
+}
+
+backup() {
+    require_env
+    require_docker
+    mkdir -p backups
+    db_name=$(env_value POSTGRES_DB)
+    target="backups/nuvio-$(date -u +%Y%m%dT%H%M%SZ).dump"
+    docker compose exec -T db pg_dump -U postgres -d "$db_name" --format=custom > "$target"
+    echo "Backup written to $target"
+}
+
+usage() {
+    cat <<'EOF'
+Usage: ./nuvio <command>
+
+Commands:
+  setup [--domain HOST] [--app-url URL]  Configure a local or HTTPS deployment
+  up                                      Start, migrate, and verify the stack
+  down                                    Stop the stack without deleting data
+  restart                                 Restart the stack
+  status                                  Show service status
+  logs [SERVICE]                          Follow logs
+  migrate                                 Apply pending Nuvio migrations
+  doctor                                  Check Auth, REST, Storage, and Functions
+  credentials                             Show client and Studio connection details
+  backup                                  Create a local database backup
+  pull                                    Pull pinned container images
+EOF
+}
+
+command=${1:-help}
+[ $# -eq 0 ] || shift
+
+case "$command" in
+    setup) setup "$@" ;;
+    up)
+        require_env
+        require_docker
+        docker compose up -d --wait
+        migrate
+        doctor
+        ;;
+    down) require_env; require_docker; docker compose down "$@" ;;
+    restart) require_env; require_docker; docker compose restart "$@" ;;
+    status) require_env; require_docker; docker compose ps "$@" ;;
+    logs) require_env; require_docker; docker compose logs -f "$@" ;;
+    migrate) migrate ;;
+    doctor) doctor ;;
+    credentials) credentials ;;
+    backup) backup ;;
+    pull) require_env; require_docker; docker compose pull ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 1 ;;
+esac
