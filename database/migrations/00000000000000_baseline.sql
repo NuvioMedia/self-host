@@ -35,7 +35,6 @@ SET row_security = off;
 --
 
 
-
 --
 -- Name: approve_tv_login_session(text); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -1725,11 +1724,10 @@ CREATE FUNCTION public.sync_pull_provider_credentials(p_profile_id integer) RETU
     LANGUAGE sql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
-    select pc.provider, pc.credential_json, pc.updated_at
-    from public.provider_credentials pc
-    where pc.user_id = get_sync_owner()
-      and pc.profile_id = p_profile_id
-    order by pc.provider;
+    select null::text as provider,
+           null::jsonb as credential_json,
+           null::timestamp with time zone as updated_at
+    where false;
 $$;
 
 
@@ -2418,10 +2416,19 @@ declare
     v_incoming_hash text;
     v_old_size integer;
     v_incoming_size integer;
+    v_allow_settings_shrink boolean := false;
+    v_suspicious_shrink boolean := false;
 begin
     if p_profile_id < 1 or p_profile_id > 6 then
         raise exception 'Invalid profile id';
     end if;
+
+    v_allow_settings_shrink :=
+        lower(coalesce(
+            v_headers->>'x-nuvio-allow-settings-shrink',
+            v_headers->>'X-Nuvio-Allow-Settings-Shrink',
+            ''
+        )) in ('1', 'true', 't', 'yes', 'y');
 
     if v_new_settings #>> '{features,player_settings,next_episode_threshold_percent_v2,value}' ~ '^-?[0-9]+(\.[0-9]+)?$' then
         v_new_settings := jsonb_set(
@@ -2460,6 +2467,35 @@ begin
     v_old_size := length(coalesce(v_old_settings::text, ''));
     v_incoming_size := length(coalesce(v_new_settings::text, ''));
 
+    v_suspicious_shrink :=
+        v_old_settings is not null
+        and v_old_size >= 5000
+        and v_incoming_size < (v_old_size::numeric * 0.50)
+        and (
+            v_incoming_size < 2500
+            or (v_old_size >= 10000 and v_incoming_size < 7500)
+            or (v_old_size >= 50000 and v_incoming_size < 15000)
+        );
+
+    if v_suspicious_shrink and not v_allow_settings_shrink then
+        raise log
+            'Rejected suspicious profile settings shrink user=% profile=% platform=% old_size=% incoming_size=% user_agent=%',
+            v_user_id,
+            p_profile_id,
+            p_platform,
+            v_old_size,
+            v_incoming_size,
+            coalesce(v_headers->>'user-agent', v_headers->>'User-Agent');
+
+        raise exception
+            'Rejected suspicious profile settings shrink: old_size=%, incoming_size=%, platform=%, profile_id=%',
+            v_old_size,
+            v_incoming_size,
+            p_platform,
+            p_profile_id
+            using errcode = '22023';
+    end if;
+
     insert into public.sync_push_audit_logs (
         surface,
         user_id,
@@ -2494,7 +2530,9 @@ begin
         jsonb_build_object(
             'old_size_bytes', v_old_size,
             'incoming_size_bytes', v_incoming_size,
-            'settings_changed', v_old_settings is distinct from v_new_settings
+            'settings_changed', v_old_settings is distinct from v_new_settings,
+            'shrink_guard_checked', true,
+            'allow_settings_shrink', v_allow_settings_shrink
         )
     );
 
@@ -2686,98 +2724,11 @@ $$;
 CREATE FUNCTION public.sync_push_provider_credentials(p_profile_id integer, p_credentials jsonb, p_origin_client_id text) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
-    AS $_$
-declare
-    v_user_id uuid := get_sync_owner();
-    v_entry jsonb;
-    v_provider text;
-    v_payload jsonb;
-    v_incoming_created_at numeric;
+    AS $$
 begin
-    perform set_config('app.sync_origin_client_id', coalesce(p_origin_client_id, ''), true);
-
-    if p_profile_id is null then
-        raise exception 'p_profile_id is required';
-    end if;
-
-    for v_entry in
-        select value
-        from jsonb_array_elements(coalesce(p_credentials, '[]'::jsonb))
-    loop
-        v_provider := lower(btrim(coalesce(v_entry->>'provider', '')));
-        v_payload := coalesce(v_entry->'credential_json', '{}'::jsonb);
-        v_incoming_created_at := null;
-
-        if v_provider = '' then
-            continue;
-        end if;
-
-        if v_payload = '{}'::jsonb or v_payload = 'null'::jsonb then
-            delete from public.provider_credentials pc
-            where pc.user_id = v_user_id
-              and pc.profile_id = p_profile_id
-              and pc.provider = v_provider;
-        else
-            if v_provider = 'trakt' then
-                if btrim(coalesce(v_payload->>'created_at', '')) !~ '^[0-9]+$' then
-                    raise log
-                        'Rejected Trakt credential push with invalid created_at user=% profile=%',
-                        v_user_id,
-                        p_profile_id;
-                    continue;
-                end if;
-                v_incoming_created_at := (v_payload->>'created_at')::numeric;
-            end if;
-
-            insert into public.provider_credentials (
-                user_id,
-                profile_id,
-                provider,
-                credential_json,
-                updated_at
-            ) values (
-                v_user_id,
-                p_profile_id,
-                v_provider,
-                v_payload,
-                now()
-            )
-            on conflict (user_id, profile_id, provider)
-            do update set
-                credential_json = excluded.credential_json,
-                updated_at = now()
-            where provider_credentials.credential_json is distinct from excluded.credential_json
-              and (
-                  v_provider <> 'trakt'
-                  or (
-                      v_incoming_created_at >
-                          case
-                              when btrim(coalesce(provider_credentials.credential_json->>'created_at', ''))
-                                  ~ '^[0-9]+$'
-                              then (provider_credentials.credential_json->>'created_at')::numeric
-                              else -1
-                          end
-                      or (
-                          v_incoming_created_at =
-                              case
-                                  when btrim(coalesce(provider_credentials.credential_json->>'created_at', ''))
-                                      ~ '^[0-9]+$'
-                                  then (provider_credentials.credential_json->>'created_at')::numeric
-                                  else -1
-                              end
-                          and (excluded.credential_json->>'access_token')
-                              is not distinct from
-                              (provider_credentials.credential_json->>'access_token')
-                          and (excluded.credential_json->>'refresh_token')
-                              is not distinct from
-                              (provider_credentials.credential_json->>'refresh_token')
-                      )
-                  )
-              );
-        end if;
-    end loop;
+    return;
 end;
-$_$;
+$$;
 
 
 --
@@ -5068,6 +5019,7 @@ GRANT USAGE ON SCHEMA public TO postgres;
 GRANT USAGE ON SCHEMA public TO anon;
 GRANT USAGE ON SCHEMA public TO authenticated;
 GRANT USAGE ON SCHEMA public TO service_role;
+GRANT USAGE ON SCHEMA public TO supabase_monitor;
 
 
 --
@@ -5168,6 +5120,7 @@ GRANT ALL ON FUNCTION public.fix_watch_progress_key() TO service_role;
 GRANT ALL ON TABLE public.avatar_catalog TO anon;
 GRANT ALL ON TABLE public.avatar_catalog TO authenticated;
 GRANT ALL ON TABLE public.avatar_catalog TO service_role;
+GRANT SELECT ON TABLE public.avatar_catalog TO supabase_monitor;
 
 
 --
@@ -5186,6 +5139,7 @@ GRANT ALL ON FUNCTION public.get_avatar_catalog() TO service_role;
 GRANT ALL ON TABLE public.profile_tracker_settings TO anon;
 GRANT ALL ON TABLE public.profile_tracker_settings TO authenticated;
 GRANT ALL ON TABLE public.profile_tracker_settings TO service_role;
+GRANT SELECT ON TABLE public.profile_tracker_settings TO supabase_monitor;
 
 
 --
@@ -5221,6 +5175,7 @@ GRANT ALL ON FUNCTION public.get_sync_owner() TO authenticated;
 GRANT ALL ON TABLE public.user_tracker_tokens TO anon;
 GRANT ALL ON TABLE public.user_tracker_tokens TO authenticated;
 GRANT ALL ON TABLE public.user_tracker_tokens TO service_role;
+GRANT SELECT ON TABLE public.user_tracker_tokens TO supabase_monitor;
 
 
 --
@@ -5470,6 +5425,7 @@ GRANT ALL ON FUNCTION public.sync_pull_collections(p_profile_id integer) TO auth
 GRANT ALL ON TABLE public.home_catalog_settings TO anon;
 GRANT ALL ON TABLE public.home_catalog_settings TO authenticated;
 GRANT ALL ON TABLE public.home_catalog_settings TO service_role;
+GRANT SELECT ON TABLE public.home_catalog_settings TO supabase_monitor;
 
 
 --
@@ -5497,6 +5453,7 @@ GRANT ALL ON FUNCTION public.sync_pull_home_catalog_settings(p_profile_id intege
 GRANT ALL ON TABLE public.library_items TO anon;
 GRANT ALL ON TABLE public.library_items TO authenticated;
 GRANT ALL ON TABLE public.library_items TO service_role;
+GRANT SELECT ON TABLE public.library_items TO supabase_monitor;
 
 
 --
@@ -5561,6 +5518,7 @@ GRANT ALL ON FUNCTION public.sync_pull_provider_credentials(p_profile_id integer
 GRANT ALL ON TABLE public.watch_progress TO anon;
 GRANT ALL ON TABLE public.watch_progress TO authenticated;
 GRANT ALL ON TABLE public.watch_progress TO service_role;
+GRANT SELECT ON TABLE public.watch_progress TO supabase_monitor;
 
 
 --
@@ -5587,6 +5545,7 @@ GRANT ALL ON FUNCTION public.sync_pull_watch_progress_delta(p_profile_id integer
 GRANT ALL ON TABLE public.watched_items TO anon;
 GRANT ALL ON TABLE public.watched_items TO authenticated;
 GRANT ALL ON TABLE public.watched_items TO service_role;
+GRANT SELECT ON TABLE public.watched_items TO supabase_monitor;
 
 
 --
@@ -5866,6 +5825,7 @@ GRANT ALL ON FUNCTION public.verify_profile_pin(p_profile_id integer, p_pin text
 
 GRANT ALL ON TABLE public.addons TO authenticated;
 GRANT ALL ON TABLE public.addons TO service_role;
+GRANT SELECT ON TABLE public.addons TO supabase_monitor;
 
 
 --
@@ -5875,6 +5835,7 @@ GRANT ALL ON TABLE public.addons TO service_role;
 GRANT ALL ON TABLE public.collections TO anon;
 GRANT ALL ON TABLE public.collections TO authenticated;
 GRANT ALL ON TABLE public.collections TO service_role;
+GRANT SELECT ON TABLE public.collections TO supabase_monitor;
 
 
 --
@@ -5883,6 +5844,7 @@ GRANT ALL ON TABLE public.collections TO service_role;
 
 GRANT ALL ON TABLE public.plugins TO authenticated;
 GRANT ALL ON TABLE public.plugins TO service_role;
+GRANT SELECT ON TABLE public.plugins TO supabase_monitor;
 
 
 --
@@ -5892,6 +5854,7 @@ GRANT ALL ON TABLE public.plugins TO service_role;
 GRANT ALL ON TABLE public.profile_settings_blobs TO anon;
 GRANT ALL ON TABLE public.profile_settings_blobs TO authenticated;
 GRANT ALL ON TABLE public.profile_settings_blobs TO service_role;
+GRANT SELECT ON TABLE public.profile_settings_blobs TO supabase_monitor;
 
 
 --
@@ -5901,6 +5864,7 @@ GRANT ALL ON TABLE public.profile_settings_blobs TO service_role;
 GRANT ALL ON TABLE public.profiles TO anon;
 GRANT ALL ON TABLE public.profiles TO authenticated;
 GRANT ALL ON TABLE public.profiles TO service_role;
+GRANT SELECT ON TABLE public.profiles TO supabase_monitor;
 
 
 --
@@ -5911,6 +5875,7 @@ GRANT ALL ON TABLE public.provider_credentials TO postgres;
 GRANT ALL ON TABLE public.provider_credentials TO anon;
 GRANT ALL ON TABLE public.provider_credentials TO authenticated;
 GRANT ALL ON TABLE public.provider_credentials TO service_role;
+GRANT SELECT ON TABLE public.provider_credentials TO supabase_monitor;
 
 
 --
@@ -5918,6 +5883,7 @@ GRANT ALL ON TABLE public.provider_credentials TO service_role;
 --
 
 GRANT ALL ON TABLE public.sync_push_audit_logs TO service_role;
+GRANT SELECT ON TABLE public.sync_push_audit_logs TO supabase_monitor;
 
 
 --
@@ -5927,6 +5893,7 @@ GRANT ALL ON TABLE public.sync_push_audit_logs TO service_role;
 GRANT ALL ON TABLE public.tracker_tv_login_sessions TO anon;
 GRANT ALL ON TABLE public.tracker_tv_login_sessions TO authenticated;
 GRANT ALL ON TABLE public.tracker_tv_login_sessions TO service_role;
+GRANT SELECT ON TABLE public.tracker_tv_login_sessions TO supabase_monitor;
 
 
 --
@@ -5936,6 +5903,7 @@ GRANT ALL ON TABLE public.tracker_tv_login_sessions TO service_role;
 GRANT ALL ON TABLE public.tv_login_sessions TO anon;
 GRANT ALL ON TABLE public.tv_login_sessions TO authenticated;
 GRANT ALL ON TABLE public.tv_login_sessions TO service_role;
+GRANT SELECT ON TABLE public.tv_login_sessions TO supabase_monitor;
 
 
 --
@@ -5943,6 +5911,7 @@ GRANT ALL ON TABLE public.tv_login_sessions TO service_role;
 --
 
 GRANT ALL ON TABLE public.user_activity_events TO service_role;
+GRANT SELECT ON TABLE public.user_activity_events TO supabase_monitor;
 
 
 --
@@ -5950,6 +5919,7 @@ GRANT ALL ON TABLE public.user_activity_events TO service_role;
 --
 
 GRANT ALL ON TABLE public.watch_progress_events TO service_role;
+GRANT SELECT ON TABLE public.watch_progress_events TO supabase_monitor;
 
 
 --
@@ -5966,6 +5936,7 @@ GRANT ALL ON SEQUENCE public.watch_progress_events_event_id_seq TO service_role;
 --
 
 GRANT ALL ON TABLE public.watch_progress_sync_audit_logs TO service_role;
+GRANT SELECT ON TABLE public.watch_progress_sync_audit_logs TO supabase_monitor;
 
 
 --
@@ -5975,6 +5946,7 @@ GRANT ALL ON TABLE public.watch_progress_sync_audit_logs TO service_role;
 GRANT ALL ON TABLE public.watched_item_events TO anon;
 GRANT ALL ON TABLE public.watched_item_events TO authenticated;
 GRANT ALL ON TABLE public.watched_item_events TO service_role;
+GRANT SELECT ON TABLE public.watched_item_events TO supabase_monitor;
 
 
 --
@@ -6044,11 +6016,14 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON T
 ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON TABLES TO anon;
 ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON TABLES TO authenticated;
 ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT ALL ON TABLES TO service_role;
+ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT SELECT ON TABLES TO supabase_monitor;
 
 
 --
 -- PostgreSQL database dump complete
 --
+
+
 
 INSERT INTO nuvio_migrations.schema_migrations (version)
 VALUES ('00000000000000')
