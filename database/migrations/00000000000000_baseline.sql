@@ -14,6 +14,18 @@ CREATE TABLE IF NOT EXISTS nuvio_migrations.schema_migrations (
 
 REVOKE ALL ON TABLE nuvio_migrations.schema_migrations FROM PUBLIC;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_catalog.pg_roles
+        WHERE rolname = 'supabase_monitor'
+    ) THEN
+        CREATE ROLE supabase_monitor NOLOGIN;
+    END IF;
+END;
+$$;
+
 
 -- Dumped from database version 17.6
 -- Dumped by pg_dump version 17.6
@@ -33,7 +45,6 @@ SET row_security = off;
 --
 -- Name: public; Type: SCHEMA; Schema: -; Owner: -
 --
-
 
 --
 -- Name: approve_tv_login_session(text); Type: FUNCTION; Schema: public; Owner: -
@@ -535,7 +546,33 @@ $$;
 
 CREATE FUNCTION public.handle_new_profile_default_addons() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
-    AS $$ begin if new.uses_primary_addons = false then insert into public.addons (user_id, profile_id, url, name, enabled, sort_order) select new.user_id, new.profile_index, 'https://catalog.nuvio.tv/manifest.json', 'Nuvio Catalog Addon', true, 0 where not exists (select 1 from public.addons where user_id = new.user_id and profile_id = new.profile_index and md5(url) = md5('https://catalog.nuvio.tv/manifest.json')); insert into public.addons (user_id, profile_id, url, name, enabled, sort_order) select new.user_id, new.profile_index, 'https://opensubtitles-v3.strem.io', 'OpenSubtitles v3', true, 1 where not exists (select 1 from public.addons where user_id = new.user_id and profile_id = new.profile_index and md5(url) = md5('https://opensubtitles-v3.strem.io')); end if; return new; end; $$;
+    AS $$
+begin
+  if new.uses_primary_addons = false then
+    insert into public.addons (user_id, profile_id, url, name, enabled, sort_order)
+    select new.user_id, new.profile_index, 'https://v3-cinemeta.strem.io/manifest.json', 'Cinemeta', true, 0
+    where not exists (
+      select 1
+      from public.addons
+      where user_id = new.user_id
+        and profile_id = new.profile_index
+        and md5(url) = md5('https://v3-cinemeta.strem.io/manifest.json')
+    );
+
+    insert into public.addons (user_id, profile_id, url, name, enabled, sort_order)
+    select new.user_id, new.profile_index, 'https://opensubtitles-v3.strem.io', 'OpenSubtitles v3', true, 1
+    where not exists (
+      select 1
+      from public.addons
+      where user_id = new.user_id
+        and profile_id = new.profile_index
+        and md5(url) = md5('https://opensubtitles-v3.strem.io')
+    );
+  end if;
+
+  return new;
+end;
+$$;
 
 
 --
@@ -544,7 +581,31 @@ CREATE FUNCTION public.handle_new_profile_default_addons() RETURNS trigger
 
 CREATE FUNCTION public.handle_new_user_default_addons() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
-    AS $$ begin insert into public.addons (user_id, profile_id, url, name, enabled, sort_order) select new.id, 1, 'https://catalog.nuvio.tv/manifest.json', 'Nuvio Catalog Addon', true, 0 where not exists (select 1 from public.addons where user_id = new.id and profile_id = 1 and md5(url) = md5('https://catalog.nuvio.tv/manifest.json')); insert into public.addons (user_id, profile_id, url, name, enabled, sort_order) select new.id, 1, 'https://opensubtitles-v3.strem.io', 'OpenSubtitles v3', true, 1 where not exists (select 1 from public.addons where user_id = new.id and profile_id = 1 and md5(url) = md5('https://opensubtitles-v3.strem.io')); return new; end; $$;
+    AS $$
+begin
+  insert into public.addons (user_id, profile_id, url, name, enabled, sort_order)
+  select new.id, 1, 'https://v3-cinemeta.strem.io/manifest.json', 'Cinemeta', true, 0
+  where not exists (
+    select 1
+    from public.addons
+    where user_id = new.id
+      and profile_id = 1
+      and md5(url) = md5('https://v3-cinemeta.strem.io/manifest.json')
+  );
+
+  insert into public.addons (user_id, profile_id, url, name, enabled, sort_order)
+  select new.id, 1, 'https://opensubtitles-v3.strem.io', 'OpenSubtitles v3', true, 1
+  where not exists (
+    select 1
+    from public.addons
+    where user_id = new.id
+      and profile_id = 1
+      and md5(url) = md5('https://opensubtitles-v3.strem.io')
+  );
+
+  return new;
+end;
+$$;
 
 
 --
@@ -1458,6 +1519,13 @@ BEGIN
     );
 END;
 $$;
+
+
+--
+-- Name: FUNCTION sync_export_account_backup(); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.sync_export_account_backup() IS 'Exports a versioned Nuvio account backup for the authenticated sync owner. Sensitive auth, credential, token, session, device, and audit data are intentionally excluded.';
 
 
 --
@@ -2417,6 +2485,7 @@ declare
     v_old_size integer;
     v_incoming_size integer;
     v_allow_settings_shrink boolean := false;
+    v_plugins_cleared boolean := false;
     v_suspicious_shrink boolean := false;
 begin
     if p_profile_id < 1 or p_profile_id > 6 then
@@ -2467,6 +2536,21 @@ begin
     v_old_size := length(coalesce(v_old_settings::text, ''));
     v_incoming_size := length(coalesce(v_new_settings::text, ''));
 
+    -- Plugin badge settings can be most of the blob. Removing the last plugin
+    -- intentionally clears that object, which is a legitimate large shrink.
+    -- Only recognize it after the normalized plugins table is empty so a
+    -- default/truncated settings payload cannot bypass the guard on its own.
+    v_plugins_cleared :=
+        jsonb_typeof(v_old_settings #> '{features,stream_badge_settings}') = 'object'
+        and coalesce(v_old_settings #> '{features,stream_badge_settings}', '{}'::jsonb) <> '{}'::jsonb
+        and coalesce(v_new_settings #> '{features,stream_badge_settings}', '{}'::jsonb) = '{}'::jsonb
+        and not exists (
+            select 1
+            from public.plugins p
+            where p.user_id = v_user_id
+              and p.profile_id = p_profile_id
+        );
+
     v_suspicious_shrink :=
         v_old_settings is not null
         and v_old_size >= 5000
@@ -2477,7 +2561,7 @@ begin
             or (v_old_size >= 50000 and v_incoming_size < 15000)
         );
 
-    if v_suspicious_shrink and not v_allow_settings_shrink then
+    if v_suspicious_shrink and not v_allow_settings_shrink and not v_plugins_cleared then
         raise log
             'Rejected suspicious profile settings shrink user=% profile=% platform=% old_size=% incoming_size=% user_agent=%',
             v_user_id,
@@ -2532,7 +2616,8 @@ begin
             'incoming_size_bytes', v_incoming_size,
             'settings_changed', v_old_settings is distinct from v_new_settings,
             'shrink_guard_checked', true,
-            'allow_settings_shrink', v_allow_settings_shrink
+            'allow_settings_shrink', v_allow_settings_shrink,
+            'plugins_cleared', v_plugins_cleared
         )
     );
 
@@ -3610,6 +3695,13 @@ $_$;
 
 
 --
+-- Name: FUNCTION sync_restore_account_backup(p_backup jsonb, p_mode text); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.sync_restore_account_backup(p_backup jsonb, p_mode text) IS 'Restores a versioned Nuvio account backup for the authenticated sync owner in replace mode. Sensitive auth, credential, token, session, device, and audit data are not restored.';
+
+
+--
 -- Name: sync_set_origin_client_id(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -3887,6 +3979,13 @@ CREATE TABLE public.profiles (
     CONSTRAINT chk_primary_no_uses_primary CHECK (((profile_index > 1) OR ((uses_primary_addons = false) AND (uses_primary_plugins = false)))),
     CONSTRAINT profiles_failed_pin_attempts_non_negative CHECK ((failed_pin_attempts >= 0))
 );
+
+
+--
+-- Name: COLUMN profiles.avatar_url; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.profiles.avatar_url IS 'Optional custom profile avatar image URL. When set, the client uses this instead of avatar_id.';
 
 
 --
