@@ -137,5 +137,9 @@ printf '%s' "$delete_response" | jq -e '.success == true' >/dev/null
     echo "Account deletion did not remove the auth user" >&2
     exit 1
 }
+[ "$(query "select count(*) from public.watch_progress_events where user_id = '$user_id'")" = "0" ] || {
+    echo "Account deletion left watch-progress events behind" >&2
+    exit 1
+}
 user_id=""
 echo "OK  account deletion"

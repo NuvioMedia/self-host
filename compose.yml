@@ -513,12 +513,8 @@ services:
     healthcheck:
       test:
         [
-        "CMD",
-        "pg_isready",
-        "-U",
-        "postgres",
-        "-h",
-        "localhost"
+        "CMD-SHELL",
+        "pg_isready -U postgres -h localhost && psql -U supabase_admin -d \"$${POSTGRES_DB}\" -Atqc \"select exists(select 1 from nuvio_migrations.schema_migrations where version = '00000000000000')\" | grep -qx t"
         ]
       interval: 5s
       timeout: 5s

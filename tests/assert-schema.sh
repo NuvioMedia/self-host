@@ -26,7 +26,7 @@ if [ "${1:-full}" = "database" ]; then
 else
     assert_count "storage policies" 1 "$(query "select count(*) from pg_policies where schemaname='storage' and tablename='objects' and policyname='Public avatar read access'")"
     assert_count "storage buckets" 2 "$(query "select count(*) from storage.buckets where id in ('avatars', 'covers')")"
-    assert_count "Nuvio migrations" 6 "$(query "select count(*) from nuvio_migrations.schema_migrations")"
+    assert_count "Nuvio migrations" 7 "$(query "select count(*) from nuvio_migrations.schema_migrations")"
     assert_count "private settings" 1 "$(query "select count(*) from nuvio_private.instance_settings where key='default_catalog_url'")"
     assert_count "avatar catalog entries" 41 "$(query "select count(*) from public.avatar_catalog where is_active")"
     assert_count "avatar catalog objects" 41 "$(query "select count(*) from public.avatar_catalog a join storage.objects o on o.bucket_id='avatars' and o.name=a.storage_path where a.is_active")"

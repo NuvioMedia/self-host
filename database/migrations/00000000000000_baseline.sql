@@ -871,6 +871,16 @@ CREATE FUNCTION public.record_library_item_delta_event() RETURNS trigger
     AS $$
 begin
     if tg_op = 'DELETE' then
+        -- Account deletion cascades from auth.users after the parent row is no
+        -- longer visible. Do not create a delta event that references it.
+        if not exists (
+            select 1
+            from auth.users
+            where id = old.user_id
+        ) then
+            return old;
+        end if;
+
         insert into public.library_item_events (
             user_id,
             profile_id,
@@ -955,6 +965,16 @@ CREATE FUNCTION public.record_watch_progress_delta_event() RETURNS trigger
     AS $$
 begin
   if tg_op = 'DELETE' then
+    -- Account deletion cascades from auth.users after the parent row is no
+    -- longer visible. Do not retain a progress tombstone for that account.
+    if not exists (
+      select 1
+      from auth.users
+      where id = old.user_id
+    ) then
+      return old;
+    end if;
+
     insert into public.watch_progress_events (
       user_id,
       profile_id,
@@ -5536,14 +5556,6 @@ ALTER TABLE ONLY public.user_activity_events
 
 
 --
--- Name: user_session_devices user_session_devices_session_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.user_session_devices
-    ADD CONSTRAINT user_session_devices_session_id_fkey FOREIGN KEY (session_id) REFERENCES auth.sessions(id) ON DELETE CASCADE;
-
-
---
 -- Name: user_session_devices user_session_devices_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -5557,6 +5569,14 @@ ALTER TABLE ONLY public.user_session_devices
 
 ALTER TABLE ONLY public.user_tracker_tokens
     ADD CONSTRAINT user_tracker_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: watch_progress_events watch_progress_events_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.watch_progress_events
+    ADD CONSTRAINT watch_progress_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
 
 --
