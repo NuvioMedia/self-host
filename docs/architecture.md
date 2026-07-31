@@ -4,17 +4,19 @@ Nuvio Self-Hosted runs as one Docker Compose deployment. This page explains
 which services hold your data and which ports your server uses.
 
 ```text
-Nuvio client
-    |
-    +-- Caddy (HTTPS deployment)
-            |
-            +-- Kong API gateway
-                    +-- Auth
-                    +-- PostgREST --------> PostgreSQL
-                    +-- Storage ----------> PostgreSQL + local files
-                    +-- Edge Runtime -----> Nuvio Edge Functions
-                    +-- Realtime ---------> PostgreSQL (optional)
-                    +-- Studio -----------> postgres-meta (optional)
+Browser -----------+
+                   |
+Nuvio client ------+--> Caddy (HTTPS deployment)
+                         +-- Web routes ----> Account Dashboard
+                         +-- API routes ----> Kong API gateway
+                                                  +-- Auth
+                                                  +-- PostgREST ----> PostgreSQL
+                                                  +-- Storage ------> PostgreSQL + local files
+                                                  +-- Edge Runtime -> Nuvio Edge Functions
+                                                  +-- Realtime -----> PostgreSQL (optional)
+
+SSH tunnel ------------> Kong localhost route --> Studio (optional)
+                                                  +-- postgres-meta
 
 ./nuvio commands
     +-- migrations ------------> PostgreSQL
@@ -24,10 +26,15 @@ Nuvio client
 ## Request Flow
 
 Your apps reach account sign-in, synchronization, file storage, and supporting
-functions through one backend URL. If you enable Realtime or Studio, they use
-the same deployment. On a public server, Caddy manages HTTPS and forwards
-requests to the API gateway. For local use, the backend listens on
-`http://localhost:8000` by default.
+functions through one backend URL. On an HTTPS deployment, browsers opening
+that URL receive the account dashboard while Supabase API paths are forwarded
+to Kong. The dashboard image contains compiled account UI assets and receives
+the deployment URL and publishable key at startup. Its private source repository
+is not included in this repository or in the runtime image.
+
+If you enable Realtime or Studio, they use the same deployment. Studio remains
+available on the localhost Kong port for access through an SSH tunnel. For local
+use, the backend listens on `http://localhost:8000` by default.
 
 ## Database
 

@@ -42,6 +42,16 @@ jobs:
           test -z "$(docker compose config --services | grep -E '^(studio|meta|realtime)$')"
           docker compose --profile studio --profile realtime config --quiet
           test "$(docker compose --profile studio --profile realtime config --services | grep -Ec '^(studio|meta|realtime)$')" -eq 3
+          docker compose -f compose.yml -f compose.production.yml config --quiet
+          test "$(docker compose -f compose.yml -f compose.production.yml config --services | grep -Ec '^account-dashboard$')" -eq 1
+      - name: Validate Caddy routing
+        run: >-
+          docker run --rm
+          -e NUVIO_DOMAIN=backend.example.com
+          -e ANON_KEY=test_publishable_key
+          -v "$GITHUB_WORKSPACE/volumes/proxy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro"
+          caddy:2.10.0-alpine
+          caddy validate --config /etc/caddy/Caddyfile
 
   database-bootstrap:
     runs-on: ubuntu-latest

@@ -5,12 +5,26 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
+  account-dashboard:
+    image: ${NUVIO_ACCOUNT_DASHBOARD_IMAGE:-ghcr.io/tapframe/nuvio-account-dashboard:latest}
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      kong:
+        condition: service_healthy
+    environment:
+      NUVIO_SUPABASE_URL: ${SUPABASE_PUBLIC_URL}
+      NUVIO_SUPABASE_ANON_KEY: ${ANON_KEY}
+      NUVIO_PUBLIC_SITE_URL: ${NUVIO_PUBLIC_SITE_URL:-https://nuvio.tv}
+
   caddy:
     image: caddy:2.10.0-alpine
     restart: unless-stopped
     logging: *default-logging
     depends_on:
       kong:
+        condition: service_healthy
+      account-dashboard:
         condition: service_healthy
     ports:
       - "80:80"

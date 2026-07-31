@@ -21,6 +21,14 @@ affected version, steps to reproduce it, and its possible impact.
 - Keep the automatic safety backup until a restore has been verified.
 - Keep the host operating system and Docker Engine updated.
 
+## Account Dashboard Image
+
+The HTTPS deployment pulls a prebuilt account-dashboard image. The image
+contains only compiled browser assets and an unprivileged static web server; it
+does not contain the private website source, website API server, database, or
+uploads. The dashboard receives only the public backend URL and publishable key
+at startup. Never pass a service-role key or database credential to it.
+
 ## Email Authentication
 
 New email addresses are confirmed automatically by default. To send email

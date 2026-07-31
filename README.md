@@ -2,7 +2,8 @@
 
 Host your own Nuvio backend on a Linux server with Docker Compose. Your
 deployment includes PostgreSQL, account sign-in, synchronization, file
-storage, and automatic HTTPS. Studio and Realtime are optional.
+storage, and the supporting APIs. HTTPS deployments add a web account dashboard
+and automatic TLS. Studio and Realtime are optional.
 
 ## Requirements
 
@@ -39,6 +40,10 @@ and 443, then run:
 Caddy obtains and renews the TLS certificate. PostgreSQL and its connection
 pooler remain bound to localhost.
 
+Open `https://backend.example.com` to sign in and manage profiles, integrations,
+collections, library items, watch history, devices, and synchronized app
+settings. Nuvio clients use that same URL as their backend URL.
+
 `--app-url` configures the allowed authentication redirect origin. To use a
 different default Nuvio catalog, add `--catalog-url` during setup:
 
@@ -72,6 +77,10 @@ COMPOSE_PROFILES=
 
 Configurations created before optional profiles were introduced continue to
 run Studio and Realtime until `COMPOSE_PROFILES` is explicitly added.
+
+The account dashboard owns the public domain root. When Studio is enabled, use
+the localhost URL shown by `./nuvio credentials` through an SSH tunnel instead
+of exposing Studio publicly.
 
 ## Connect Nuvio
 
@@ -148,6 +157,8 @@ Common settings include:
 | Setting | Purpose |
 | --- | --- |
 | `COMPOSE_PROFILES` | Optional `studio` and `realtime` services |
+| `NUVIO_ACCOUNT_DASHBOARD_IMAGE` | Prebuilt account-only web dashboard image |
+| `NUVIO_PUBLIC_SITE_URL` | Public Nuvio site used for legal and help links |
 | `DEFAULT_CATALOG_URL` | Catalog added to new Nuvio profiles |
 | `NUVIO_CLOUD_URL` | Nuvio Cloud address used when moving an account |
 | `NUVIO_CLOUD_PUBLISHABLE_KEY` | Public Nuvio Cloud key used to sign in during an import |

@@ -143,11 +143,11 @@ setup() {
         set_env NUVIO_DOMAIN "$domain"
         set_env SUPABASE_PUBLIC_URL "https://${domain}"
         set_env API_EXTERNAL_URL "https://${domain}"
-        set_env SITE_URL "$app_url"
-        set_env ADDITIONAL_REDIRECT_URLS "$app_url"
+        set_env SITE_URL "https://${domain}"
+        set_env ADDITIONAL_REDIRECT_URLS "https://${domain},${app_url}"
         set_env MAILER_EXTERNAL_HOSTS "$domain"
         set_env WEBAUTHN_RP_ID "$domain"
-        set_env WEBAUTHN_RP_ORIGINS "$app_url"
+        set_env WEBAUTHN_RP_ORIGINS "https://${domain},${app_url}"
     elif [ -n "$app_url" ]; then
         validate_http_url "$app_url" "--app-url"
         set_env SITE_URL "$app_url"
@@ -283,6 +283,13 @@ doctor() {
     public_url=$(env_value SUPABASE_PUBLIC_URL)
     anon_key=$(env_value ANON_KEY)
 
+    case "$(env_value COMPOSE_FILE)" in
+        *compose.production.yml*)
+            curl -fsS -o /dev/null "$public_url/account/login"
+            echo "OK  Account Dashboard"
+            ;;
+    esac
+
     curl -fsS -o /dev/null -H "apikey: $anon_key" "$public_url/auth/v1/health"
     echo "OK  Auth"
     curl -fsS -o /dev/null -X POST -H "apikey: $anon_key" -H "Authorization: Bearer $anon_key" "$public_url/rest/v1/rpc/health_ping"
@@ -298,7 +305,7 @@ credentials() {
     echo "Backend URL:       $(env_value SUPABASE_PUBLIC_URL)"
     echo "Publishable key:   $(env_value ANON_KEY)"
     if profile_enabled studio; then
-        echo "Studio URL:        $(env_value SUPABASE_PUBLIC_URL)"
+        echo "Studio URL:        http://localhost:$(env_value KONG_HTTP_PORT)"
         echo "Studio username:   $(env_value DASHBOARD_USERNAME)"
         echo "Studio password:   $(env_value DASHBOARD_PASSWORD)"
     else
