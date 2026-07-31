@@ -10,10 +10,10 @@ Nuvio client
             +-- Kong API gateway
                     +-- Auth
                     +-- PostgREST --------> PostgreSQL
-                    +-- Realtime ---------> PostgreSQL
                     +-- Storage ----------> PostgreSQL + local files
                     +-- Edge Runtime -----> Nuvio Edge Functions
-                    +-- Studio -----------> postgres-meta
+                    +-- Realtime ---------> PostgreSQL (optional)
+                    +-- Studio -----------> postgres-meta (optional)
 
 Nuvio CLI
     +-- migrations ------------> PostgreSQL
@@ -22,10 +22,11 @@ Nuvio CLI
 
 ## Request Flow
 
-Kong exposes Auth, REST, Realtime, Storage, Edge Functions, and Studio through
-one backend URL. In an HTTPS deployment, Caddy terminates TLS and forwards
-requests to Kong. In a local deployment, Kong listens on
-`http://localhost:8000` by default.
+Kong exposes Auth, REST, Storage, and Edge Functions through one backend URL.
+When their Compose profiles are enabled, Realtime and Studio use that same
+URL. In an HTTPS deployment, Caddy terminates TLS and forwards requests to
+Kong. In a local deployment, Kong listens on `http://localhost:8000` by
+default.
 
 ## Database
 
@@ -58,7 +59,7 @@ one-time exchange credentials before performing privileged operations.
 | Port | Use |
 | --- | --- |
 | `80` and `443` | Caddy HTTP validation and HTTPS traffic |
-| `8000` | Local Kong API and Studio |
+| `8000` | Local Kong API and optional Studio |
 | `5432` | Local PostgreSQL session pooling |
 | `6543` | Local PostgreSQL transaction pooling |
 

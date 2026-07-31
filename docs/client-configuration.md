@@ -36,7 +36,7 @@ SELF_HOSTED=true
 NUVIO_SUPABASE_URL=<BACKEND_URL>
 NUVIO_SUPABASE_ANON_KEY=<PUBLISHABLE_KEY>
 NUVIO_SUPABASE_FALLBACK_URL=
-NUVIO_REALTIME_SYNC_ENABLED=true
+NUVIO_REALTIME_SYNC_ENABLED=false
 AVATAR_PUBLIC_BASE_URL=<BACKEND_URL>/storage/v1/object/public/avatars
 ```
 
@@ -63,7 +63,7 @@ In the root of `NuvioMobile`, create or update `local.properties`:
 NUVIO_SUPABASE_URL=<BACKEND_URL>
 NUVIO_SUPABASE_ANON_KEY=<PUBLISHABLE_KEY>
 NUVIO_SUPABASE_FALLBACK_URL=
-NUVIO_REALTIME_SYNC_ENABLED=true
+NUVIO_REALTIME_SYNC_ENABLED=false
 ```
 
 These values configure both Android and iOS. The build also accepts variables
@@ -81,7 +81,7 @@ In the root of `NuvioDesktop`, create or update `local.properties`:
 NUVIO_SUPABASE_URL=<BACKEND_URL>
 NUVIO_SUPABASE_ANON_KEY=<PUBLISHABLE_KEY>
 NUVIO_SUPABASE_FALLBACK_URL=
-NUVIO_REALTIME_SYNC_ENABLED=true
+NUVIO_REALTIME_SYNC_ENABLED=false
 ```
 
 The same names can be supplied as build environment variables. A non-empty
@@ -93,6 +93,10 @@ Rebuild the desktop app after changing the values:
 ```sh
 ./gradlew :composeApp:packageReleaseDistributionForCurrentOS
 ```
+
+Realtime is not required for the normal RPC-based synchronization flow. Keep
+`NUVIO_REALTIME_SYNC_ENABLED=false` with the default backend. Set it to `true`
+only when the backend was configured with the `realtime` Compose profile.
 
 ## Web, Tizen, and webOS
 

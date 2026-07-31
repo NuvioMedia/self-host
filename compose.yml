@@ -12,9 +12,13 @@ x-logging: &default-logging
 services:
 
   studio:
+    profiles: ["studio"]
     image: supabase/studio:2026.06.03-sha-0bca601
     restart: unless-stopped
     logging: *default-logging
+    depends_on:
+      meta:
+        condition: service_started
     healthcheck:
       test:
         [
@@ -75,9 +79,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    depends_on:
-      studio:
-        condition: service_healthy
     ports:
       - 127.0.0.1:${KONG_HTTP_PORT}:8000/tcp
     volumes:
@@ -303,6 +304,7 @@ services:
       ]
 
   realtime:
+    profiles: ["realtime"]
     # This container name looks inconsistent but is correct because realtime constructs tenant id by parsing the subdomain
     image: supabase/realtime:v2.102.3
     restart: unless-stopped
@@ -431,6 +433,7 @@ services:
       IMGPROXY_MAX_SRC_RESOLUTION: 16.8
 
   meta:
+    profiles: ["studio"]
     image: supabase/postgres-meta:v0.96.6
     restart: unless-stopped
     logging: *default-logging

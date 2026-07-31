@@ -1,8 +1,8 @@
 # Nuvio Self-Hosted
 
 Run the Nuvio backend on a Linux server with Docker Compose. The deployment
-includes PostgreSQL, authentication, the Nuvio sync API, Storage, Realtime,
-Edge Functions, Studio, and automatic HTTPS.
+includes PostgreSQL, authentication, the Nuvio sync API, Storage, Edge
+Functions, and automatic HTTPS. Studio and Realtime are optional.
 
 ## Requirements
 
@@ -26,9 +26,7 @@ cd nuvio-self-hosted
 ./nuvio credentials
 ```
 
-The backend and Studio are available at `http://localhost:8000`. Open that URL
-in a browser and sign in with the Studio username and password printed by
-`./nuvio credentials`.
+The backend is available at `http://localhost:8000`.
 
 ## HTTPS Deployment
 
@@ -53,6 +51,30 @@ different default Nuvio catalog, add `--catalog-url` during setup:
   --app-url https://nuvio.tv \
   --catalog-url https://catalog.example.com/manifest.json
 ```
+
+## Optional Services
+
+Fresh installations omit Studio, its postgres-meta sidecar, and Realtime to
+reduce resource usage and exposed surface area. Enable either service during
+initial setup only when it is needed:
+
+```sh
+./nuvio setup --with-studio
+./nuvio setup --with-realtime
+./nuvio setup --with-studio --with-realtime
+```
+
+The selected services are stored as a comma-separated list in
+`COMPOSE_PROFILES`. To change an existing deployment, first run `./nuvio down`,
+edit `COMPOSE_PROFILES` in `.env`, and then run `./nuvio up`. Use an empty value
+for the minimal stack:
+
+```env
+COMPOSE_PROFILES=
+```
+
+Configurations created before optional profiles were introduced continue to
+run Studio and Realtime until `COMPOSE_PROFILES` is explicitly added.
 
 ## Connect Nuvio
 
@@ -79,7 +101,7 @@ settings used by Android TV, Mobile, Desktop, Web, Tizen, and webOS builds.
 | `./nuvio status` | Show service status |
 | `./nuvio logs [SERVICE]` | Follow logs for all services or one service |
 | `./nuvio doctor` | Check Auth, REST, Storage, and Edge Functions |
-| `./nuvio credentials` | Show the backend, client, and Studio credentials |
+| `./nuvio credentials` | Show backend credentials and Studio credentials when enabled |
 | `./nuvio migrate` | Apply pending migrations and seed catalog assets |
 | `./nuvio configure` | Apply instance settings from `.env` |
 | `./nuvio backup` | Back up PostgreSQL data and local Storage files |
@@ -93,12 +115,13 @@ Common settings include:
 
 | Setting | Purpose |
 | --- | --- |
+| `COMPOSE_PROFILES` | Optional `studio` and `realtime` services |
 | `DEFAULT_CATALOG_URL` | Catalog added to new Nuvio profiles |
 | `SITE_URL` | Default authentication redirect URL |
 | `ADDITIONAL_REDIRECT_URLS` | Additional allowed authentication redirects |
 | `ENABLE_EMAIL_AUTOCONFIRM` | Automatically confirm new email accounts |
 | `SMTP_*` | SMTP server and sender configuration |
-| `KONG_HTTP_PORT` | Local backend and Studio port |
+| `KONG_HTTP_PORT` | Local backend and optional Studio port |
 | `POSTGRES_PORT` | Local PostgreSQL session-pooler port |
 | `POOLER_PROXY_PORT_TRANSACTION` | Local PostgreSQL transaction-pooler port |
 

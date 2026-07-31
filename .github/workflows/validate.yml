@@ -35,7 +35,11 @@ jobs:
           sh -n tests/smoke-upgrade.sh
           sh -n tests/smoke-workflows.sh
       - name: Validate Compose
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          test -z "$(docker compose config --services | grep -E '^(studio|meta|realtime)$')"
+          docker compose --profile studio --profile realtime config --quiet
+          test "$(docker compose --profile studio --profile realtime config --services | grep -Ec '^(studio|meta|realtime)$')" -eq 3
 
   database-bootstrap:
     runs-on: ubuntu-latest
