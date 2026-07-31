@@ -1,16 +1,17 @@
-# Configure Nuvio Clients
+# Connect Nuvio Apps
 
-Every Nuvio client must use the Backend URL and Publishable key from the same
-self-hosted deployment. Print them from the backend directory:
+Use this guide when building a Nuvio app that connects to your self-hosted
+server. Every app must use the Backend URL and Publishable key from the same
+deployment. From your Nuvio Self-Hosted directory, run:
 
 ```sh
 ./nuvio credentials
 ```
 
-Use the printed values wherever this guide shows `<BACKEND_URL>` and
-`<PUBLISHABLE_KEY>`. Use the public HTTPS URL for physical devices, without a
-trailing slash. Never put the service-role key, Supabase secret key, database
-password, or Studio password in a client.
+Replace `<BACKEND_URL>` and `<PUBLISHABLE_KEY>` below with the printed values.
+For a phone, TV, or another physical device, use your public HTTPS address
+without a trailing slash. Never put the service-role key, Supabase secret key,
+database password, or Studio password in an app.
 
 The public avatar bucket URL is:
 
@@ -18,9 +19,9 @@ The public avatar bucket URL is:
 <BACKEND_URL>/storage/v1/object/public/avatars
 ```
 
-## Client Reference
+## Choose Your App
 
-| Repository | Backend configuration |
+| App source | File to edit |
 | --- | --- |
 | `NuvioMedia/NuvioTV` | Root `local.properties` |
 | `NuvioMedia/NuvioMobile` | Root `local.properties` or build environment variables |
@@ -29,7 +30,8 @@ The public avatar bucket URL is:
 
 ## Android TV
 
-In the root of `NuvioTV`, add these values to `local.properties`:
+Open the `NuvioTV` project and add these values to its root
+`local.properties` file:
 
 ```properties
 SELF_HOSTED=true
@@ -40,13 +42,12 @@ NUVIO_REALTIME_SYNC_ENABLED=false
 AVATAR_PUBLIC_BASE_URL=<BACKEND_URL>/storage/v1/object/public/avatars
 ```
 
-The current Gradle build reads the `NUVIO_SUPABASE_*` names shown above. Debug
-builds give `local.dev.properties` precedence for backend values. When building
-a debug APK, put the same client settings in `local.dev.properties` and remove
-any values for a different backend.
+If you build a debug APK, copy the same settings to `local.dev.properties`.
+That file takes priority over `local.properties`, so remove any values that
+point to a different backend.
 
-`SELF_HOSTED=true` switches NuvioTV to direct email and password sign-in. A
-self-hosted build does not use QR sign-in and does not need
+`SELF_HOSTED=true` gives your TV build direct email and password sign-in. This
+self-hosted mode does not use QR sign-in and does not need
 `TV_LOGIN_WEB_BASE_URL`.
 
 Rebuild the client after changing the file:
@@ -57,7 +58,8 @@ Rebuild the client after changing the file:
 
 ## Mobile
 
-In the root of `NuvioMobile`, create or update `local.properties`:
+Open the `NuvioMobile` project and create or update its root
+`local.properties` file:
 
 ```properties
 NUVIO_SUPABASE_URL=<BACKEND_URL>
@@ -66,16 +68,17 @@ NUVIO_SUPABASE_FALLBACK_URL=
 NUVIO_REALTIME_SYNC_ENABLED=false
 ```
 
-These values configure both Android and iOS. The build also accepts variables
-with the same names from the environment, but a non-empty value in
-`local.properties` takes precedence. Avatar URLs are derived from
-`NUVIO_SUPABASE_URL`, so no separate avatar setting is needed.
+These values configure both Android and iOS. You can also provide variables
+with the same names in the build environment, but a non-empty value in
+`local.properties` takes priority. Avatar URLs come from
+`NUVIO_SUPABASE_URL`, so you do not need a separate avatar setting.
 
 Rebuild the Android or iOS app after changing the values.
 
 ## Desktop
 
-In the root of `NuvioDesktop`, create or update `local.properties`:
+Open the `NuvioDesktop` project and create or update its root
+`local.properties` file:
 
 ```properties
 NUVIO_SUPABASE_URL=<BACKEND_URL>
@@ -84,8 +87,8 @@ NUVIO_SUPABASE_FALLBACK_URL=
 NUVIO_REALTIME_SYNC_ENABLED=false
 ```
 
-The same names can be supplied as build environment variables. A non-empty
-value in `local.properties` takes precedence. Avatar URLs are derived from
+You can also supply the same names as build environment variables. A non-empty
+value in `local.properties` takes priority. Avatar URLs come from
 `NUVIO_SUPABASE_URL`.
 
 Rebuild the desktop app after changing the values:
@@ -94,15 +97,15 @@ Rebuild the desktop app after changing the values:
 ./gradlew :composeApp:packageReleaseDistributionForCurrentOS
 ```
 
-Realtime is not required for the normal RPC-based synchronization flow. Keep
+Realtime is not required for normal synchronization. Keep
 `NUVIO_REALTIME_SYNC_ENABLED=false` with the default backend. Set it to `true`
 only when the backend was configured with the `realtime` Compose profile.
 
 ## Web, Tizen, and webOS
 
-`NuvioWeb` is the shared source for the browser app and the packaged Samsung
-Tizen and LG webOS apps. In the root of `NuvioWeb`, copy the example file and
-then set the backend values:
+The `NuvioWeb` project provides the browser app and the packaged Samsung Tizen
+and LG webOS apps. Open that project, copy the example file, and then set your
+backend values:
 
 ```sh
 cp local.example.properties local.properties
@@ -117,10 +120,10 @@ TV_LOGIN_REDIRECT_BASE_URL=https://app.example.com/tv-login
 AVATAR_PUBLIC_BASE_URL=<BACKEND_URL>/storage/v1/object/public/avatars
 ```
 
-`TV_LOGIN_REDIRECT_BASE_URL` must be a compatible `/tv-login` page using the
-same backend. The avatar setting is optional for this client because it can
-derive the URL from `SUPABASE_URL`, but setting it explicitly keeps all TV
-builds consistent.
+Replace `app.example.com` with the address where you host the web app.
+`TV_LOGIN_REDIRECT_BASE_URL` must point to its `/tv-login` page and use the same
+backend. The avatar setting is optional because the app can derive it from
+`SUPABASE_URL`, but setting it explicitly keeps all TV builds consistent.
 
 Build the browser app:
 
@@ -132,15 +135,15 @@ npm run build
 The build writes the selected values to `dist/nuvio.env.js`. Deploy the full
 `dist/` directory; do not omit that file.
 
-Build packages for physical TVs from the same configured checkout:
+Build packages for physical TVs from the same configured project:
 
 ```sh
 npm run package:webos
 npm run package:tizen
 ```
 
-Both packages include the generated `nuvio.env.js`, so they do not need runtime
-backend variables on the TV. Rebuild and reinstall the package whenever these
+Both packages include the generated `nuvio.env.js`, so you do not need to enter
+backend values on the TV. Rebuild and reinstall the package whenever the
 values change.
 
 To package Tizen with a properties file stored elsewhere, use:
@@ -151,14 +154,14 @@ npm run package:tizen -- --env-source /absolute/path/to/local.properties
 
 ## Verify the Connection
 
-Before testing a client, check the backend:
+Before testing your app, check the backend:
 
 ```sh
 ./nuvio doctor
 ```
 
-Then confirm that the rebuilt client can create or sign in to an account,
-create a profile, load avatars, and synchronize a change between two clients.
-For NuvioTV, confirm that direct email and password sign-in is shown instead of
-QR sign-in. For Web TV builds, also test QR sign-in when a matching `/tv-login`
-page is configured.
+Then check that your rebuilt app can create or sign in to an account, create a
+profile, load avatars, and synchronize a change with another app. On NuvioTV,
+make sure direct email and password sign-in appears instead of QR sign-in. For
+Web TV builds, also test QR sign-in if you configured a matching `/tv-login`
+page.

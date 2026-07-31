@@ -1,10 +1,10 @@
 # Security
 
-## Reporting A Vulnerability
+## Report a Vulnerability
 
-Do not publish suspected vulnerabilities in a GitHub issue. Use GitHub's
-private vulnerability reporting for this repository and include the affected
-version, reproduction steps, and impact.
+If you find a possible vulnerability, do not publish it in a GitHub issue. Use
+GitHub's private vulnerability reporting for this repository and include the
+affected version, steps to reproduce it, and its possible impact.
 
 ## Deployment Checklist
 
@@ -23,9 +23,10 @@ version, reproduction steps, and impact.
 
 ## Email Authentication
 
-Email auto-confirmation is enabled by default. To use verification, password
-recovery, and email-change messages, configure the `SMTP_*` settings in `.env`,
-set `ENABLE_EMAIL_AUTOCONFIRM=false`, and run `./nuvio up`.
+New email addresses are confirmed automatically by default. To send email
+verification, password recovery, and email-change messages, configure the
+`SMTP_*` settings in `.env`, set `ENABLE_EMAIL_AUTOCONFIRM=false`, and run
+`./nuvio up`.
 
 ## Secrets
 
@@ -33,9 +34,27 @@ set `ENABLE_EMAIL_AUTOCONFIRM=false`, and run `./nuvio up`.
 not reuse secrets between deployments. Anyone with the service-role key or
 database credentials can bypass normal account-level access controls.
 
+## Account Imports
+
+Move your Nuvio Cloud account only from a trusted terminal on your self-hosted
+server. The importer sends your password only to Nuvio Cloud sign-in and your
+local sign-in service. It never accepts your password as a command argument.
+Temporary sign-in tokens and account data are kept in a private directory and
+removed when the importer exits.
+
+The Nuvio Cloud publishable key in `.env` is public app configuration. It does
+not grant administrative or database access. Never replace it with a
+service-role key. An import starts only after a successful sign-in, and the
+download contains data from that account only.
+
+If the same email already exists on your server, importing resets its local
+password and replaces its app data after you confirm. Cloud password hashes,
+signed-in sessions, MFA/passkey secrets, linked devices, PIN hashes, provider
+credentials, tracker sign-ins, and login history are not transferred.
+
 ## API Access
 
-Account and synchronization RPCs require an authenticated user session.
-Maintenance helpers are restricted to the service role. Public endpoints are
-limited to health checks, avatar catalog reads, and TV login initiation and
-polling.
+Account and synchronization requests require a signed-in account. Only the
+service role can run maintenance operations. Without signing in, clients can
+only check service health, load the public avatar catalog, and start or check a
+TV sign-in.

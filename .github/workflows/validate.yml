@@ -28,7 +28,9 @@ jobs:
         run: |
           sh -n nuvio
           sh -n scripts/generate-secrets.sh
+          sh -n scripts/import-account.sh
           sh -n tests/assert-schema.sh
+          sh -n tests/smoke-account-import.sh
           sh -n tests/smoke-signup.sh
           sh -n tests/smoke-backup-restore.sh
           sh -n tests/smoke-security.sh
@@ -82,6 +84,8 @@ jobs:
         run: ./tests/smoke-workflows.sh
       - name: Verify API security boundaries
         run: ./tests/smoke-security.sh
+      - name: Verify official account import
+        run: ./tests/smoke-account-import.sh
       - name: Verify backup and restore
         run: ./tests/smoke-backup-restore.sh
       - name: Show service logs on failure

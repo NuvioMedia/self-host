@@ -87,6 +87,7 @@ setup() {
     catalog_url=""
     with_studio=0
     with_realtime=0
+    import_account_choice=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -95,6 +96,8 @@ setup() {
             --catalog-url) [ $# -ge 2 ] || die "--catalog-url needs a value"; catalog_url=$2; shift 2 ;;
             --with-studio) with_studio=1; shift ;;
             --with-realtime) with_realtime=1; shift ;;
+            --import-account) import_account_choice="yes"; shift ;;
+            --no-import-account) import_account_choice="no"; shift ;;
             -h|--help) usage; exit 0 ;;
             *) die "unknown setup option: $1" ;;
         esac
@@ -152,6 +155,22 @@ setup() {
         set_env WEBAUTHN_RP_ORIGINS "$app_url"
     fi
 
+    if [ -z "$import_account_choice" ] && [ -t 0 ]; then
+        echo ""
+        printf 'Import an account from official Nuvio after the first startup? [y/N] '
+        IFS= read -r answer || answer=""
+        case "$answer" in
+            y|Y|yes|YES|Yes) import_account_choice="yes" ;;
+            *) import_account_choice="no" ;;
+        esac
+    fi
+    [ -n "$import_account_choice" ] || import_account_choice="no"
+    if [ "$import_account_choice" = "yes" ]; then
+        set_env IMPORT_ACCOUNT_AFTER_UP true
+    else
+        set_env IMPORT_ACCOUNT_AFTER_UP false
+    fi
+
     mkdir -p volumes/db/data volumes/storage backups
     chmod 700 volumes/db/data
     docker compose config --quiet
@@ -159,6 +178,11 @@ setup() {
     echo ""
     echo "Nuvio backend configured."
     echo "Start it with: ./nuvio up"
+    if [ "$import_account_choice" = "yes" ]; then
+        echo "The account importer will run after the first successful startup."
+    else
+        echo "Optional later import: ./nuvio import-account"
+    fi
 }
 
 migrate() {
@@ -280,6 +304,16 @@ credentials() {
     else
         echo "Studio:            disabled"
     fi
+}
+
+import_account() {
+    case "${1:-}" in
+        -h|--help) sh "$ROOT/scripts/import-account.sh" "$@"; return ;;
+    esac
+    require_env
+    require_docker
+    sh "$ROOT/scripts/import-account.sh" "$@"
+    set_env IMPORT_ACCOUNT_AFTER_UP false
 }
 
 create_backup() {
@@ -445,6 +479,7 @@ Usage: ./nuvio <command>
 Commands:
   setup [--domain HOST] [--app-url URL] [--catalog-url URL]
         [--with-studio] [--with-realtime]
+        [--import-account | --no-import-account]
                                           Configure a local or HTTPS deployment
   up                                      Start, migrate, seed assets, and verify
   down                                    Stop the stack without deleting data
@@ -455,6 +490,7 @@ Commands:
   configure                               Apply instance settings from .env
   doctor                                  Check Auth, REST, Storage, and Functions
   credentials                             Show client and Studio connection details
+  import-account [--email EMAIL] [--yes]  Import an official Nuvio account
   backup                                  Back up database and local Storage
   restore BACKUP_DIR --yes                Restore database and local Storage
   pull                                    Pull pinned container images
@@ -474,6 +510,11 @@ case "$command" in
         configure_instance
         seed_avatar_assets
         doctor
+        if [ "$(env_value IMPORT_ACCOUNT_AFTER_UP 2>/dev/null || true)" = "true" ]; then
+            echo ""
+            echo "Starting the requested official account import..."
+            import_account
+        fi
         ;;
     down) require_env; require_docker; docker compose down "$@" ;;
     restart) require_env; require_docker; docker compose restart "$@" ;;
@@ -483,6 +524,7 @@ case "$command" in
     configure) configure_instance ;;
     doctor) doctor ;;
     credentials) credentials ;;
+    import-account) import_account "$@" ;;
     backup) backup ;;
     restore) restore "$@" ;;
     pull) require_env; require_docker; docker compose pull ;;

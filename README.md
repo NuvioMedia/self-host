@@ -1,18 +1,19 @@
 # Nuvio Self-Hosted
 
-Run the Nuvio backend on a Linux server with Docker Compose. The deployment
-includes PostgreSQL, authentication, the Nuvio sync API, Storage, Edge
-Functions, and automatic HTTPS. Studio and Realtime are optional.
+Host your own Nuvio backend on a Linux server with Docker Compose. Your
+deployment includes PostgreSQL, account sign-in, synchronization, file
+storage, and automatic HTTPS. Studio and Realtime are optional.
 
 ## Requirements
 
 - A 64-bit Linux host using `amd64` or `arm64`
 - Docker Engine with Docker Compose v2
-- Git, OpenSSL, and curl
+- Git, OpenSSL, and curl (`jq` is also required for account imports)
 - A domain pointed at the server for an HTTPS deployment
 
-Use at least 4 GB RAM, 2 CPU cores, and 40 GB SSD storage. For a production
-server, 8 GB RAM, 4 cores, and 80 GB SSD storage are recommended.
+Use at least 4 GB RAM, 2 CPU cores, and 40 GB SSD storage. For a public server
+used by several people, 8 GB RAM, 4 cores, and 80 GB SSD storage are
+recommended.
 
 ## Quick Start
 
@@ -78,17 +79,51 @@ run Studio and Realtime until `COMPOSE_PROFILES` is explicitly added.
 
 ## Connect Nuvio
 
-Configure the Nuvio client with the two values shown by `./nuvio credentials`:
+Connect your Nuvio apps with the two values shown by `./nuvio credentials`:
 
 - **Backend URL**
 - **Publishable key**
 
-The publishable key is intended for client applications. Never place the
+The publishable key is safe to enter in a Nuvio app. Never enter the
 service-role key, Supabase secret key, database password, or Studio password in
-a client.
+an app.
 
-See [Configure Nuvio Clients](docs/client-configuration.md) for the exact
-settings used by Android TV, Mobile, Desktop, Web, Tizen, and webOS builds.
+If you build the apps yourself, see
+[Connect Nuvio Apps](docs/client-configuration.md) for Android TV, Mobile,
+Desktop, Web, Tizen, and webOS settings.
+
+## Move Your Nuvio Cloud Account
+
+During interactive setup, you can choose to move your existing Nuvio Cloud
+account to this server. If you choose yes, the importer starts after the
+backend passes its first health check. You can also request this directly:
+
+```sh
+./nuvio setup --import-account
+./nuvio up
+```
+
+If your server is already set up, run:
+
+```sh
+./nuvio import-account
+```
+
+Enter the email and password you use with Nuvio Cloud. Your password is hidden
+while you type and is never accepted as a command-line argument, logged, or
+written to disk. The importer signs in as you, downloads only your account
+backup, and creates a local sign-in with the same email and password.
+
+Profiles, add-ons, plugins, library entries, watch progress, watched history,
+settings, collections, and tracker preferences are restored. Your referenced
+avatar and cover files are copied to this server and updated to use its
+address. If the same email already exists locally, you can review the backup
+counts before confirming that its local app data should be replaced.
+
+For your security, password hashes and Cloud account IDs are never copied.
+Signed-in sessions, MFA and passkey enrollments, profile PINs, linked devices,
+tracker sign-ins, provider credentials, and login history stay behind. After
+the import, reconnect those services and set up your security factors again.
 
 ## Commands
 
@@ -100,10 +135,11 @@ settings used by Android TV, Mobile, Desktop, Web, Tizen, and webOS builds.
 | `./nuvio restart` | Restart all services |
 | `./nuvio status` | Show service status |
 | `./nuvio logs [SERVICE]` | Follow logs for all services or one service |
-| `./nuvio doctor` | Check Auth, REST, Storage, and Edge Functions |
-| `./nuvio credentials` | Show backend credentials and Studio credentials when enabled |
-| `./nuvio migrate` | Apply pending migrations and seed catalog assets |
-| `./nuvio configure` | Apply instance settings from `.env` |
+| `./nuvio doctor` | Check that the backend services are healthy |
+| `./nuvio credentials` | Show the values needed to connect your apps and, when enabled, Studio |
+| `./nuvio import-account` | Move your authenticated Nuvio Cloud account to this server |
+| `./nuvio migrate` | Apply database updates and add missing built-in avatars |
+| `./nuvio configure` | Apply your settings from `.env` |
 | `./nuvio backup` | Back up PostgreSQL data and local Storage files |
 | `./nuvio restore BACKUP --yes` | Restore a backup after creating a safety backup |
 | `./nuvio pull` | Pull the configured container images |
@@ -117,6 +153,9 @@ Common settings include:
 | --- | --- |
 | `COMPOSE_PROFILES` | Optional `studio` and `realtime` services |
 | `DEFAULT_CATALOG_URL` | Catalog added to new Nuvio profiles |
+| `NUVIO_CLOUD_URL` | Nuvio Cloud address used when moving an account |
+| `NUVIO_CLOUD_PUBLISHABLE_KEY` | Public Nuvio Cloud key used to sign in during an import |
+| `IMPORT_ACCOUNT_AFTER_UP` | Run the importer after the next successful startup |
 | `SITE_URL` | Default authentication redirect URL |
 | `ADDITIONAL_REDIRECT_URLS` | Additional allowed authentication redirects |
 | `ENABLE_EMAIL_AUTOCONFIRM` | Automatically confirm new email accounts |
@@ -156,9 +195,9 @@ git pull --ff-only
 ./nuvio up
 ```
 
-`./nuvio up` applies pending migrations before checking the deployment.
-It also uploads any missing bundled avatar catalog assets through the Storage
-API. User-uploaded production objects are never included in this seed.
+`./nuvio up` applies pending database updates before checking the deployment.
+It also uploads any missing avatars included with Nuvio. This update does not
+replace or remove files that you uploaded.
 
 ## Data
 
@@ -168,7 +207,7 @@ API. User-uploaded production objects are never included in this seed.
 - Backups: `backups/`
 - Deployment configuration and secrets: `.env`
 
-`./nuvio down` preserves these files.
+`./nuvio down` stops Nuvio but preserves all of these files.
 
 ## Security
 

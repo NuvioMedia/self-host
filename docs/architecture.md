@@ -1,6 +1,7 @@
-# Architecture
+# How Your Deployment Works
 
-Nuvio Self-Hosted runs as one Docker Compose deployment.
+Nuvio Self-Hosted runs as one Docker Compose deployment. This page explains
+which services hold your data and which ports your server uses.
 
 ```text
 Nuvio client
@@ -15,44 +16,41 @@ Nuvio client
                     +-- Realtime ---------> PostgreSQL (optional)
                     +-- Studio -----------> postgres-meta (optional)
 
-Nuvio CLI
+./nuvio commands
     +-- migrations ------------> PostgreSQL
     +-- backup and restore ----> PostgreSQL + local files
 ```
 
 ## Request Flow
 
-Kong exposes Auth, REST, Storage, and Edge Functions through one backend URL.
-When their Compose profiles are enabled, Realtime and Studio use that same
-URL. In an HTTPS deployment, Caddy terminates TLS and forwards requests to
-Kong. In a local deployment, Kong listens on `http://localhost:8000` by
-default.
+Your apps reach account sign-in, synchronization, file storage, and supporting
+functions through one backend URL. If you enable Realtime or Studio, they use
+the same deployment. On a public server, Caddy manages HTTPS and forwards
+requests to the API gateway. For local use, the backend listens on
+`http://localhost:8000` by default.
 
 ## Database
 
-PostgreSQL stores Nuvio accounts, profiles, addons, plugins, library items,
+PostgreSQL stores your accounts, profiles, add-ons, plugins, library items,
 watch progress, settings, tracker connections, login sessions, and sync state.
-Row Level Security and authenticated RPC functions isolate each account's data.
+Database access rules keep each account's data separate.
 
-Database migrations live in `database/migrations/`. `./nuvio up` and
-`./nuvio migrate` apply pending migrations in order and record them in
-`nuvio_migrations.schema_migrations`.
+`./nuvio up` applies required database updates automatically. You can also run
+`./nuvio migrate` after updating the installation. Applied updates are tracked
+so they are not run twice.
 
 ## Storage
 
-Storage metadata is kept in PostgreSQL. Files are stored under
-`volumes/storage/` and served by the Storage API. The `avatars` and `covers`
-buckets are created by the Nuvio storage migration. The public avatar catalog
-metadata is seeded by a database migration, and the matching bundled files in
-`assets/avatars/` are uploaded idempotently through the Storage API by
-`./nuvio up` and `./nuvio migrate`. User-uploaded objects are not bundled.
+Information about stored files is kept in PostgreSQL, while the files
+themselves are kept under `volumes/storage/`. Nuvio creates `avatars` and
+`covers` storage areas automatically. `./nuvio up` and `./nuvio migrate` add
+any missing built-in avatars without replacing your uploaded files.
 
 ## Edge Functions
 
-Nuvio Edge Functions run in the Supabase Edge Runtime and provide health
-checks, account deletion, TV login exchange, and tracker login exchange.
-Functions that use the service-role key verify the caller or validate the
-one-time exchange credentials before performing privileged operations.
+Supporting functions provide health checks, account deletion, TV sign-in, and
+tracker sign-in. Operations that need administrative access first verify the
+signed-in account or a one-time sign-in code.
 
 ## Network Ports
 
@@ -63,4 +61,6 @@ one-time exchange credentials before performing privileged operations.
 | `5432` | Local PostgreSQL session pooling |
 | `6543` | Local PostgreSQL transaction pooling |
 
-Published database and pooler ports bind to `127.0.0.1`.
+The database ports bind to `127.0.0.1`, so they are available only on your
+server. For an HTTPS installation, expose ports `80` and `443` to the internet
+and keep the other ports private.
