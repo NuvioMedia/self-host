@@ -620,6 +620,52 @@ $$;
 
 
 --
+-- Name: list_my_sessions(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.list_my_sessions() RETURNS TABLE(session_id uuid, created_at timestamp with time zone, last_active_at timestamp with time zone, client_name text, client_version text, platform text, device_name text, user_agent text, is_current boolean)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO ''
+    AS $$
+    select
+        sessions.id,
+        sessions.created_at,
+        greatest(
+            devices.last_seen_at,
+            sessions.refreshed_at at time zone 'UTC',
+            sessions.updated_at,
+            sessions.created_at
+        ),
+        devices.client_name,
+        devices.client_version,
+        devices.platform,
+        devices.device_name,
+        left(sessions.user_agent, 512),
+        sessions.id = nullif(auth.jwt() ->> 'session_id', '')::uuid
+    from public.user_session_devices as devices
+    join auth.sessions as sessions
+      on sessions.id = devices.session_id
+     and sessions.user_id = devices.user_id
+    where devices.user_id = auth.uid()
+      and devices.client_name in (
+          'Nuvio Web',
+          'Nuvio Mobile',
+          'Nuvio TV',
+          'Nuvio Desktop'
+      )
+      and (sessions.not_after is null or sessions.not_after > now())
+    order by
+        sessions.id = nullif(auth.jwt() ->> 'session_id', '')::uuid desc,
+        greatest(
+            devices.last_seen_at,
+            sessions.refreshed_at at time zone 'UTC',
+            sessions.updated_at,
+            sessions.created_at
+        ) desc;
+$$;
+
+
+--
 -- Name: poll_tracker_tv_login_session(text, text, text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -816,6 +862,90 @@ $$;
 
 
 --
+-- Name: record_library_item_delta_event(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.record_library_item_delta_event() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+begin
+    if tg_op = 'DELETE' then
+        insert into public.library_item_events (
+            user_id,
+            profile_id,
+            operation,
+            content_id,
+            content_type,
+            name,
+            poster,
+            poster_shape,
+            background,
+            description,
+            release_info,
+            imdb_rating,
+            genres,
+            addon_base_url,
+            added_at
+        ) values (
+            old.user_id,
+            old.profile_id,
+            'delete',
+            old.content_id,
+            old.content_type,
+            coalesce(old.name, ''),
+            old.poster,
+            coalesce(old.poster_shape, 'POSTER'),
+            old.background,
+            old.description,
+            old.release_info,
+            old.imdb_rating,
+            coalesce(old.genres, '{}'::text[]),
+            old.addon_base_url,
+            coalesce(old.added_at, 0)
+        );
+        return old;
+    end if;
+
+    insert into public.library_item_events (
+        user_id,
+        profile_id,
+        operation,
+        content_id,
+        content_type,
+        name,
+        poster,
+        poster_shape,
+        background,
+        description,
+        release_info,
+        imdb_rating,
+        genres,
+        addon_base_url,
+        added_at
+    ) values (
+        new.user_id,
+        new.profile_id,
+        'upsert',
+        new.content_id,
+        new.content_type,
+        coalesce(new.name, ''),
+        new.poster,
+        coalesce(new.poster_shape, 'POSTER'),
+        new.background,
+        new.description,
+        new.release_info,
+        new.imdb_rating,
+        coalesce(new.genres, '{}'::text[]),
+        new.addon_base_url,
+        coalesce(new.added_at, 0)
+    );
+    return new;
+end;
+$$;
+
+
+--
 -- Name: record_watch_progress_delta_event(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -883,6 +1013,165 @@ begin
     new.last_watched
   );
   return new;
+end;
+$$;
+
+
+--
+-- Name: register_current_device(text, text, text, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.register_current_device(p_installation_id text, p_client_name text, p_client_version text DEFAULT NULL::text, p_platform text DEFAULT NULL::text, p_device_name text DEFAULT NULL::text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO ''
+    AS $_$
+declare
+    v_user_id uuid := auth.uid();
+    v_session_id uuid := nullif(auth.jwt() ->> 'session_id', '')::uuid;
+    v_installation_id text := nullif(btrim(p_installation_id), '');
+    v_client_name text := nullif(btrim(p_client_name), '');
+    v_previous_session_id uuid;
+begin
+    if v_user_id is null or v_session_id is null then
+        raise exception using errcode = '42501', message = 'Authentication required';
+    end if;
+
+    if (
+        v_installation_id is null
+        or char_length(v_installation_id) not between 16 and 96
+        or v_installation_id !~ '^[A-Za-z0-9_-]+$'
+    ) then
+        raise exception using errcode = '22023', message = 'Invalid installation identifier';
+    end if;
+
+    if v_client_name not in (
+        'Nuvio Web',
+        'Nuvio Mobile',
+        'Nuvio TV',
+        'Nuvio Desktop'
+    ) then
+        raise exception using errcode = '22023', message = 'Unsupported Nuvio client';
+    end if;
+
+    if not exists (
+        select 1
+        from auth.sessions
+        where id = v_session_id
+          and user_id = v_user_id
+    ) then
+        raise exception using errcode = '42501', message = 'Session is no longer active';
+    end if;
+
+    perform pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+            v_user_id::text || ':' || v_installation_id,
+            0
+        )
+    );
+
+    delete from public.user_session_devices
+    where session_id = v_session_id;
+
+    select session_id
+    into v_previous_session_id
+    from public.user_session_devices
+    where user_id = v_user_id
+      and installation_id = v_installation_id
+    for update;
+
+    insert into public.user_session_devices (
+        session_id,
+        user_id,
+        installation_id,
+        client_name,
+        client_version,
+        platform,
+        device_name,
+        last_seen_at
+    )
+    values (
+        v_session_id,
+        v_user_id,
+        v_installation_id,
+        v_client_name,
+        left(nullif(btrim(p_client_version), ''), 40),
+        left(coalesce(nullif(btrim(p_platform), ''), 'Unknown'), 80),
+        left(nullif(btrim(p_device_name), ''), 160),
+        now()
+    )
+    on conflict (user_id, installation_id) do update
+    set session_id = excluded.session_id,
+        client_name = excluded.client_name,
+        client_version = excluded.client_version,
+        platform = excluded.platform,
+        device_name = excluded.device_name,
+        last_seen_at = excluded.last_seen_at;
+
+    if (
+        v_previous_session_id is not null
+        and v_previous_session_id <> v_session_id
+    ) then
+        delete from auth.sessions
+        where id = v_previous_session_id
+          and user_id = v_user_id;
+    end if;
+
+    return true;
+end;
+$_$;
+
+
+--
+-- Name: register_current_session(text, text, text, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.register_current_session(p_client_name text, p_client_version text DEFAULT NULL::text, p_platform text DEFAULT NULL::text, p_device_name text DEFAULT NULL::text) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO ''
+    AS $$
+declare
+    v_session_id uuid := nullif(auth.jwt() ->> 'session_id', '')::uuid;
+begin
+    if v_session_id is null then
+        raise exception using errcode = '42501', message = 'Authentication required';
+    end if;
+
+    return public.register_current_device(
+        'nuvio-session-' || replace(v_session_id::text, '-', ''),
+        p_client_name,
+        p_client_version,
+        p_platform,
+        p_device_name
+    );
+end;
+$$;
+
+
+--
+-- Name: revoke_my_session(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.revoke_my_session(p_session_id uuid) RETURNS boolean
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO ''
+    AS $$
+declare
+    v_user_id uuid := auth.uid();
+    v_current_session_id uuid := nullif(auth.jwt() ->> 'session_id', '')::uuid;
+begin
+    if v_user_id is null or v_current_session_id is null then
+        raise exception using errcode = '42501', message = 'Authentication required';
+    end if;
+
+    if p_session_id = v_current_session_id then
+        raise exception using errcode = '22023', message = 'Use local sign out for the current session';
+    end if;
+
+    delete from auth.sessions
+    where id = p_session_id
+      and user_id = v_user_id;
+
+    return found;
 end;
 $$;
 
@@ -1068,6 +1357,41 @@ $$;
 
 
 --
+-- Name: sync_delete_library_items(jsonb, integer, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.sync_delete_library_items(p_keys jsonb, p_profile_id integer DEFAULT 1, p_origin_client_id text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+    v_user_id uuid := public.get_sync_owner();
+begin
+    if p_profile_id is null or p_profile_id < 1 or p_profile_id > 6 then
+        raise exception 'Invalid profile id';
+    end if;
+
+    perform public.sync_set_origin_client_id(p_origin_client_id);
+
+    with keys as (
+        select distinct
+            (e->>'content_id')::text as content_id,
+            (e->>'content_type')::text as content_type
+        from jsonb_array_elements(coalesce(p_keys, '[]'::jsonb)) e
+        where btrim(coalesce(e->>'content_id', '')) <> ''
+          and btrim(coalesce(e->>'content_type', '')) <> ''
+    )
+    delete from public.library_items li
+    using keys k
+    where li.user_id = v_user_id
+      and li.profile_id = p_profile_id
+      and li.content_id = k.content_id
+      and li.content_type = k.content_type;
+end;
+$$;
+
+
+--
 -- Name: sync_delete_profile_data(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1166,16 +1490,6 @@ begin
   )
   select count(*)::integer into v_deleted_count from deleted;
 
-  insert into public.watch_progress_sync_audit_logs (
-    action, user_id, auth_uid, profile_id, request_user_agent, request_ip, request_method, request_path,
-    incoming_count, affected_count, payload_hash
-  ) values (
-    'delete', v_effective_user_id, v_auth_uid, p_profile_id,
-    coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-    nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
-    current_setting('request.method', true), current_setting('request.path', true),
-    v_incoming_count, v_deleted_count, v_payload_hash
-  );
 end;
 $$;
 
@@ -1201,18 +1515,6 @@ begin
   )
   select count(*)::integer into v_deleted_count from deleted;
 
-  insert into public.watch_progress_sync_audit_logs (
-    action, user_id, auth_uid, profile_id, request_user_agent, request_ip, request_method, request_path,
-    incoming_count, affected_count, payload_hash
-  ) values (
-    'delete', v_user_id, v_auth_uid, p_profile_id,
-    coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-    nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
-    current_setting('request.method', true), current_setting('request.path', true),
-    case when p_progress_key is null then 0 else 1 end,
-    v_deleted_count,
-    encode(extensions.digest(coalesce(p_progress_key, ''), 'sha256'), 'hex')
-  );
 end;
 $$;
 
@@ -1529,6 +1831,21 @@ COMMENT ON FUNCTION public.sync_export_account_backup() IS 'Exports a versioned 
 
 
 --
+-- Name: sync_get_library_delta_cursor(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.sync_get_library_delta_cursor(p_profile_id integer DEFAULT 1) RETURNS bigint
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+    select coalesce(max(e.event_id), 0)::bigint
+    from public.library_item_events e
+    where e.user_id = public.get_sync_owner()
+      and e.profile_id = p_profile_id;
+$$;
+
+
+--
 -- Name: sync_get_watch_progress_delta_cursor(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1547,16 +1864,6 @@ begin
   where user_id = v_user_id
     and profile_id = p_profile_id;
 
-  insert into public.watch_progress_sync_audit_logs (
-    action, user_id, auth_uid, profile_id, request_user_agent, request_ip, request_method, request_path,
-    max_event_id, metadata
-  ) values (
-    'get_delta_cursor', v_user_id, v_auth_uid, p_profile_id,
-    coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-    nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
-    current_setting('request.method', true), current_setting('request.path', true),
-    v_cursor, jsonb_build_object('cursor', v_cursor)
-  );
 
   return v_cursor;
 end;
@@ -1695,6 +2002,38 @@ CREATE FUNCTION public.sync_pull_library(p_profile_id integer DEFAULT 1, p_limit
       LIMIT p_limit
       OFFSET p_offset;
   $$;
+
+
+--
+-- Name: sync_pull_library_delta(integer, bigint, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.sync_pull_library_delta(p_profile_id integer DEFAULT 1, p_since_event_id bigint DEFAULT 0, p_limit integer DEFAULT 1000) RETURNS TABLE(event_id bigint, operation text, content_id text, content_type text, name text, poster text, poster_shape text, background text, description text, release_info text, imdb_rating real, genres text[], addon_base_url text, added_at bigint)
+    LANGUAGE sql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+    select
+        e.event_id,
+        e.operation,
+        e.content_id,
+        e.content_type,
+        e.name,
+        e.poster,
+        e.poster_shape,
+        e.background,
+        e.description,
+        e.release_info,
+        e.imdb_rating,
+        e.genres,
+        e.addon_base_url,
+        e.added_at
+    from public.library_item_events e
+    where e.user_id = public.get_sync_owner()
+      and e.profile_id = p_profile_id
+      and e.event_id > greatest(coalesce(p_since_event_id, 0), 0)
+    order by e.event_id asc
+    limit least(greatest(coalesce(p_limit, 1000), 1), 1000);
+$$;
 
 
 --
@@ -1868,16 +2207,6 @@ begin
     into v_returned_count, v_max_last_watched
   from pg_temp._watch_progress_pull_result;
 
-  insert into public.watch_progress_sync_audit_logs (
-    action, user_id, auth_uid, profile_id, request_user_agent, request_ip, request_method, request_path,
-    returned_count, since_last_watched, requested_limit, effective_limit, max_last_watched
-  ) values (
-    'pull_snapshot', v_owner, v_uid, p_profile_id,
-    coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-    nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
-    current_setting('request.method', true), current_setting('request.path', true),
-    v_returned_count, p_since_last_watched, p_limit, v_limit, v_max_last_watched
-  );
 
   return query select * from pg_temp._watch_progress_pull_result;
 end;
@@ -1925,16 +2254,6 @@ begin
     into v_returned_count, v_min_event_id, v_max_event_id
   from pg_temp._watch_progress_delta_result r;
 
-  insert into public.watch_progress_sync_audit_logs (
-    action, user_id, auth_uid, profile_id, request_user_agent, request_ip, request_method, request_path,
-    returned_count, since_event_id, requested_limit, effective_limit, min_event_id, max_event_id
-  ) values (
-    'pull_delta', v_user_id, v_auth_uid, p_profile_id,
-    coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-    nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
-    current_setting('request.method', true), current_setting('request.path', true),
-    v_returned_count, p_since_event_id, p_limit, v_limit, v_min_event_id, v_max_event_id
-  );
 
   return query
   select
@@ -2031,7 +2350,15 @@ CREATE FUNCTION public.sync_push_addons(p_addons jsonb, p_profile_id integer DEF
     AS $$
 declare
     v_user_id uuid := get_sync_owner();
-    v_headers jsonb := coalesce(nullif(current_setting('request.headers', true), '')::jsonb, '{}'::jsonb);
+    v_headers jsonb := coalesce(
+        nullif(current_setting('request.headers', true), '')::jsonb,
+        '{}'::jsonb
+    );
+    v_urls text[];
+    v_names text[];
+    v_enabled_values boolean[];
+    v_sort_orders integer[];
+    v_url_hashes text[];
     v_old_count integer := 0;
     v_incoming_count integer := 0;
     v_deleted_count integer := 0;
@@ -2039,32 +2366,100 @@ declare
     v_incoming_hash text;
     v_deleted_hashes jsonb := '[]'::jsonb;
 begin
-    select count(*) into v_old_count
-    from addons a
+    -- Expand and type the incoming JSON exactly once. The aligned arrays are
+    -- reused by the hash comparison, upsert, and delete.
+    select
+        coalesce(array_agg(i.url order by i.ordinality), array[]::text[]),
+        coalesce(array_agg(i.name order by i.ordinality), array[]::text[]),
+        coalesce(array_agg(i.enabled order by i.ordinality), array[]::boolean[]),
+        coalesce(array_agg(i.sort_order order by i.ordinality), array[]::integer[]),
+        coalesce(array_agg(i.url_hash order by i.ordinality), array[]::text[]),
+        count(*)::integer,
+        encode(
+            extensions.digest(
+                coalesce(
+                    string_agg(
+                        jsonb_build_array(
+                            i.url,
+                            i.name,
+                            i.enabled,
+                            i.sort_order
+                        )::text,
+                        E'\n'
+                        order by i.url_hash, i.url
+                    ),
+                    ''
+                ),
+                'sha256'
+            ),
+            'hex'
+        )
+    into
+        v_urls,
+        v_names,
+        v_enabled_values,
+        v_sort_orders,
+        v_url_hashes,
+        v_incoming_count,
+        v_incoming_hash
+    from (
+        select
+            e.ordinality,
+            (e.item->>'url')::text as url,
+            (e.item->>'name')::text as name,
+            coalesce((e.item->>'enabled')::boolean, true) as enabled,
+            coalesce((e.item->>'sort_order')::integer, 0) as sort_order,
+            md5((e.item->>'url')::text) as url_hash
+        from jsonb_array_elements(coalesce(p_addons, '[]'::jsonb))
+            with ordinality as e(item, ordinality)
+    ) as i;
+
+    -- Read the existing profile once, producing both its normalized state hash
+    -- and the deletion audit data.
+    select
+        count(*)::integer,
+        encode(
+            extensions.digest(
+                coalesce(
+                    string_agg(
+                        jsonb_build_array(
+                            a.url,
+                            a.name,
+                            a.enabled,
+                            a.sort_order
+                        )::text,
+                        E'\n'
+                        order by md5(a.url), a.url
+                    ),
+                    ''
+                ),
+                'sha256'
+            ),
+            'hex'
+        ),
+        count(*) filter (
+            where not coalesce(md5(a.url) = any(v_url_hashes), false)
+        ),
+        coalesce(
+            jsonb_agg(md5(a.url) order by md5(a.url)) filter (
+                where not coalesce(md5(a.url) = any(v_url_hashes), false)
+            ),
+            '[]'::jsonb
+        )
+    into
+        v_old_count,
+        v_old_hash,
+        v_deleted_count,
+        v_deleted_hashes
+    from public.addons as a
     where a.user_id = v_user_id
       and a.profile_id = p_profile_id;
 
-    select count(*) into v_incoming_count
-    from jsonb_array_elements(coalesce(p_addons, '[]'::jsonb)) as e;
-
-    select encode(extensions.digest(coalesce(string_agg(md5(a.url), ',' order by md5(a.url)), ''), 'sha256'), 'hex') into v_old_hash
-    from addons a
-    where a.user_id = v_user_id
-      and a.profile_id = p_profile_id;
-
-    select encode(extensions.digest(coalesce(string_agg(md5((e->>'url')::text), ',' order by md5((e->>'url')::text)), ''), 'sha256'), 'hex') into v_incoming_hash
-    from jsonb_array_elements(coalesce(p_addons, '[]'::jsonb)) as e;
-
-    select count(*), coalesce(jsonb_agg(md5(a.url) order by md5(a.url)), '[]'::jsonb)
-      into v_deleted_count, v_deleted_hashes
-    from addons a
-    where a.user_id = v_user_id
-      and a.profile_id = p_profile_id
-      and not exists (
-          select 1
-          from jsonb_array_elements(coalesce(p_addons, '[]'::jsonb)) as e
-          where md5((e->>'url')::text) = md5(a.url)
-      );
+    -- Identical retries perform no audit insert, upsert, or delete.
+    if v_old_count = v_incoming_count
+       and v_old_hash = v_incoming_hash then
+        return;
+    end if;
 
     insert into public.sync_push_audit_logs (
         surface,
@@ -2088,7 +2483,18 @@ begin
         auth.uid(),
         p_profile_id,
         coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-        nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
+        nullif(
+            split_part(
+                coalesce(
+                    v_headers->>'x-forwarded-for',
+                    v_headers->>'X-Forwarded-For',
+                    ''
+                ),
+                ',',
+                1
+            ),
+            ''
+        ),
         current_setting('request.method', true),
         current_setting('request.path', true),
         v_old_count,
@@ -2100,31 +2506,40 @@ begin
         jsonb_build_object('would_delete_existing_rows', v_deleted_count > 0)
     );
 
-    insert into addons (user_id, url, name, enabled, sort_order, profile_id)
+    insert into public.addons (
+        user_id,
+        url,
+        name,
+        enabled,
+        sort_order,
+        profile_id
+    )
     select
         v_user_id,
-        (e->>'url')::text,
-        (e->>'name')::text,
-        coalesce((e->>'enabled')::boolean, true),
-        coalesce((e->>'sort_order')::integer, 0),
+        i.url,
+        i.name,
+        i.enabled,
+        i.sort_order,
         p_profile_id
-    from jsonb_array_elements(p_addons) as e
+    from unnest(
+        v_urls,
+        v_names,
+        v_enabled_values,
+        v_sort_orders
+    ) as i(url, name, enabled, sort_order)
     on conflict (user_id, md5(url), profile_id)
     do update set
-        name       = excluded.name,
-        enabled    = excluded.enabled,
+        name = excluded.name,
+        enabled = excluded.enabled,
         sort_order = excluded.sort_order
     where addons.name is distinct from excluded.name
        or addons.enabled is distinct from excluded.enabled
        or addons.sort_order is distinct from excluded.sort_order;
 
-    delete from addons a
-    where a.user_id    = v_user_id
+    delete from public.addons as a
+    where a.user_id = v_user_id
       and a.profile_id = p_profile_id
-      and not exists (
-          select 1 from jsonb_array_elements(p_addons) as e
-          where md5((e->>'url')::text) = md5(a.url)
-      );
+      and not coalesce(md5(a.url) = any(v_url_hashes), false);
 end;
 $$;
 
@@ -2328,6 +2743,122 @@ $$;
 
 
 --
+-- Name: sync_push_library_items(jsonb, integer, text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.sync_push_library_items(p_items jsonb, p_profile_id integer DEFAULT 1, p_origin_client_id text DEFAULT NULL::text) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+declare
+    v_user_id uuid := public.get_sync_owner();
+begin
+    if p_profile_id is null or p_profile_id < 1 or p_profile_id > 6 then
+        raise exception 'Invalid profile id';
+    end if;
+
+    perform public.sync_set_origin_client_id(p_origin_client_id);
+
+    with normalized as (
+        select
+            e.ordinality,
+            (e.item->>'content_id')::text as content_id,
+            (e.item->>'content_type')::text as content_type,
+            coalesce((e.item->>'name')::text, '') as name,
+            (e.item->>'poster')::text as poster,
+            coalesce((e.item->>'poster_shape')::text, 'POSTER') as poster_shape,
+            (e.item->>'background')::text as background,
+            (e.item->>'description')::text as description,
+            (e.item->>'release_info')::text as release_info,
+            nullif(e.item->>'imdb_rating', '')::real as imdb_rating,
+            case
+                when jsonb_typeof(e.item->'genres') = 'array'
+                    then array(select jsonb_array_elements_text(e.item->'genres'))
+                else '{}'::text[]
+            end as genres,
+            (e.item->>'addon_base_url')::text as addon_base_url,
+            coalesce(nullif(e.item->>'added_at', '')::bigint, 0) as added_at
+        from jsonb_array_elements(coalesce(p_items, '[]'::jsonb))
+            with ordinality as e(item, ordinality)
+        where btrim(coalesce(e.item->>'content_id', '')) <> ''
+          and btrim(coalesce(e.item->>'content_type', '')) <> ''
+    ), deduplicated as (
+        select distinct on (content_id, content_type)
+            content_id,
+            content_type,
+            name,
+            poster,
+            poster_shape,
+            background,
+            description,
+            release_info,
+            imdb_rating,
+            genres,
+            addon_base_url,
+            added_at
+        from normalized
+        order by content_id, content_type, ordinality desc
+    )
+    insert into public.library_items (
+        user_id,
+        profile_id,
+        content_id,
+        content_type,
+        name,
+        poster,
+        poster_shape,
+        background,
+        description,
+        release_info,
+        imdb_rating,
+        genres,
+        addon_base_url,
+        added_at
+    )
+    select
+        v_user_id,
+        p_profile_id,
+        d.content_id,
+        d.content_type,
+        d.name,
+        d.poster,
+        d.poster_shape,
+        d.background,
+        d.description,
+        d.release_info,
+        d.imdb_rating,
+        d.genres,
+        d.addon_base_url,
+        d.added_at
+    from deduplicated d
+    on conflict on constraint library_items_user_id_content_id_content_type_profile_id_key
+    do update set
+        name = excluded.name,
+        poster = excluded.poster,
+        poster_shape = excluded.poster_shape,
+        background = excluded.background,
+        description = excluded.description,
+        release_info = excluded.release_info,
+        imdb_rating = excluded.imdb_rating,
+        genres = excluded.genres,
+        addon_base_url = excluded.addon_base_url,
+        added_at = excluded.added_at,
+        updated_at = now()
+    where library_items.name is distinct from excluded.name
+       or library_items.poster is distinct from excluded.poster
+       or library_items.poster_shape is distinct from excluded.poster_shape
+       or library_items.background is distinct from excluded.background
+       or library_items.description is distinct from excluded.description
+       or library_items.release_info is distinct from excluded.release_info
+       or library_items.imdb_rating is distinct from excluded.imdb_rating
+       or library_items.genres is distinct from excluded.genres
+       or library_items.addon_base_url is distinct from excluded.addon_base_url
+       or library_items.added_at is distinct from excluded.added_at;
+end;
+$$;
+
+
+--
 -- Name: sync_push_plugins(jsonb, integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -2337,7 +2868,16 @@ CREATE FUNCTION public.sync_push_plugins(p_plugins jsonb, p_profile_id integer D
     AS $$
 declare
     v_user_id uuid := get_sync_owner();
-    v_headers jsonb := coalesce(nullif(current_setting('request.headers', true), '')::jsonb, '{}'::jsonb);
+    v_headers jsonb := coalesce(
+        nullif(current_setting('request.headers', true), '')::jsonb,
+        '{}'::jsonb
+    );
+    v_urls text[];
+    v_names text[];
+    v_enabled_values boolean[];
+    v_sort_orders integer[];
+    v_repo_types text[];
+    v_url_hashes text[];
     v_old_count integer := 0;
     v_incoming_count integer := 0;
     v_deleted_count integer := 0;
@@ -2345,32 +2885,105 @@ declare
     v_incoming_hash text;
     v_deleted_hashes jsonb := '[]'::jsonb;
 begin
-    select count(*) into v_old_count
-    from plugins p
+    -- Expand and type the incoming JSON exactly once. The aligned arrays are
+    -- reused by the hash comparison, upsert, and delete.
+    select
+        coalesce(array_agg(i.url order by i.ordinality), array[]::text[]),
+        coalesce(array_agg(i.name order by i.ordinality), array[]::text[]),
+        coalesce(array_agg(i.enabled order by i.ordinality), array[]::boolean[]),
+        coalesce(array_agg(i.sort_order order by i.ordinality), array[]::integer[]),
+        coalesce(array_agg(i.repo_type order by i.ordinality), array[]::text[]),
+        coalesce(array_agg(i.url_hash order by i.ordinality), array[]::text[]),
+        count(*)::integer,
+        encode(
+            extensions.digest(
+                coalesce(
+                    string_agg(
+                        jsonb_build_array(
+                            i.url,
+                            i.name,
+                            i.enabled,
+                            i.sort_order,
+                            i.repo_type
+                        )::text,
+                        E'\n'
+                        order by i.url_hash, i.url
+                    ),
+                    ''
+                ),
+                'sha256'
+            ),
+            'hex'
+        )
+    into
+        v_urls,
+        v_names,
+        v_enabled_values,
+        v_sort_orders,
+        v_repo_types,
+        v_url_hashes,
+        v_incoming_count,
+        v_incoming_hash
+    from (
+        select
+            e.ordinality,
+            (e.item->>'url')::text as url,
+            (e.item->>'name')::text as name,
+            coalesce((e.item->>'enabled')::boolean, true) as enabled,
+            coalesce((e.item->>'sort_order')::integer, 0) as sort_order,
+            (e.item->>'repo_type')::text as repo_type,
+            md5((e.item->>'url')::text) as url_hash
+        from jsonb_array_elements(coalesce(p_plugins, '[]'::jsonb))
+            with ordinality as e(item, ordinality)
+    ) as i;
+
+    -- Read the existing profile once, producing both its normalized state hash
+    -- and the deletion audit data.
+    select
+        count(*)::integer,
+        encode(
+            extensions.digest(
+                coalesce(
+                    string_agg(
+                        jsonb_build_array(
+                            p.url,
+                            p.name,
+                            p.enabled,
+                            p.sort_order,
+                            p.repo_type
+                        )::text,
+                        E'\n'
+                        order by md5(p.url), p.url
+                    ),
+                    ''
+                ),
+                'sha256'
+            ),
+            'hex'
+        ),
+        count(*) filter (
+            where not coalesce(md5(p.url) = any(v_url_hashes), false)
+        ),
+        coalesce(
+            jsonb_agg(md5(p.url) order by md5(p.url)) filter (
+                where not coalesce(md5(p.url) = any(v_url_hashes), false)
+            ),
+            '[]'::jsonb
+        )
+    into
+        v_old_count,
+        v_old_hash,
+        v_deleted_count,
+        v_deleted_hashes
+    from public.plugins as p
     where p.user_id = v_user_id
       and p.profile_id = p_profile_id;
 
-    select count(*) into v_incoming_count
-    from jsonb_array_elements(coalesce(p_plugins, '[]'::jsonb)) as e;
-
-    select encode(extensions.digest(coalesce(string_agg(md5(p.url), ',' order by md5(p.url)), ''), 'sha256'), 'hex') into v_old_hash
-    from plugins p
-    where p.user_id = v_user_id
-      and p.profile_id = p_profile_id;
-
-    select encode(extensions.digest(coalesce(string_agg(md5((e->>'url')::text), ',' order by md5((e->>'url')::text)), ''), 'sha256'), 'hex') into v_incoming_hash
-    from jsonb_array_elements(coalesce(p_plugins, '[]'::jsonb)) as e;
-
-    select count(*), coalesce(jsonb_agg(md5(p.url) order by md5(p.url)), '[]'::jsonb)
-      into v_deleted_count, v_deleted_hashes
-    from plugins p
-    where p.user_id = v_user_id
-      and p.profile_id = p_profile_id
-      and not exists (
-          select 1
-          from jsonb_array_elements(coalesce(p_plugins, '[]'::jsonb)) as e
-          where md5((e->>'url')::text) = md5(p.url)
-      );
+    -- Identical retries perform no audit insert, upsert, or delete.
+    if v_old_count = v_incoming_count
+       and v_old_hash = v_incoming_hash then
+        return;
+    end if;
 
     insert into public.sync_push_audit_logs (
         surface,
@@ -2394,7 +3007,18 @@ begin
         auth.uid(),
         p_profile_id,
         coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-        nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
+        nullif(
+            split_part(
+                coalesce(
+                    v_headers->>'x-forwarded-for',
+                    v_headers->>'X-Forwarded-For',
+                    ''
+                ),
+                ',',
+                1
+            ),
+            ''
+        ),
         current_setting('request.method', true),
         current_setting('request.path', true),
         v_old_count,
@@ -2406,34 +3030,45 @@ begin
         jsonb_build_object('would_delete_existing_rows', v_deleted_count > 0)
     );
 
-    insert into plugins (user_id, url, name, enabled, sort_order, profile_id, repo_type)
+    insert into public.plugins (
+        user_id,
+        url,
+        name,
+        enabled,
+        sort_order,
+        profile_id,
+        repo_type
+    )
     select
         v_user_id,
-        (e->>'url')::text,
-        (e->>'name')::text,
-        coalesce((e->>'enabled')::boolean, true),
-        coalesce((e->>'sort_order')::integer, 0),
+        i.url,
+        i.name,
+        i.enabled,
+        i.sort_order,
         p_profile_id,
-        (e->>'repo_type')::text
-    from jsonb_array_elements(p_plugins) as e
+        i.repo_type
+    from unnest(
+        v_urls,
+        v_names,
+        v_enabled_values,
+        v_sort_orders,
+        v_repo_types
+    ) as i(url, name, enabled, sort_order, repo_type)
     on conflict (user_id, md5(url), profile_id)
     do update set
-        name       = excluded.name,
-        enabled    = excluded.enabled,
+        name = excluded.name,
+        enabled = excluded.enabled,
         sort_order = excluded.sort_order,
-        repo_type  = excluded.repo_type
+        repo_type = excluded.repo_type
     where plugins.name is distinct from excluded.name
        or plugins.enabled is distinct from excluded.enabled
        or plugins.sort_order is distinct from excluded.sort_order
        or plugins.repo_type is distinct from excluded.repo_type;
 
-    delete from plugins p
-    where p.user_id    = v_user_id
+    delete from public.plugins as p
+    where p.user_id = v_user_id
       and p.profile_id = p_profile_id
-      and not exists (
-          select 1 from jsonb_array_elements(p_plugins) as e
-          where md5((e->>'url')::text) = md5(p.url)
-      );
+      and not coalesce(md5(p.url) = any(v_url_hashes), false);
 end;
 $$;
 
@@ -2477,9 +3112,14 @@ CREATE FUNCTION public.sync_push_profile_settings_blob(p_profile_id integer, p_s
     AS $_$
 declare
     v_user_id uuid := get_sync_owner();
-    v_headers jsonb := coalesce(nullif(current_setting('request.headers', true), '')::jsonb, '{}'::jsonb);
+    v_headers jsonb := coalesce(
+        nullif(current_setting('request.headers', true), '')::jsonb,
+        '{}'::jsonb
+    );
     v_old_settings jsonb;
     v_new_settings jsonb := coalesce(p_settings_json, '{}'::jsonb);
+    v_old_text text;
+    v_incoming_text text;
     v_old_hash text;
     v_incoming_hash text;
     v_old_size integer;
@@ -2531,10 +3171,25 @@ begin
     order by b.updated_at desc
     limit 1;
 
-    v_old_hash := encode(extensions.digest(coalesce(v_old_settings::text, ''), 'sha256'), 'hex');
-    v_incoming_hash := encode(extensions.digest(coalesce(v_new_settings::text, ''), 'sha256'), 'hex');
-    v_old_size := length(coalesce(v_old_settings::text, ''));
-    v_incoming_size := length(coalesce(v_new_settings::text, ''));
+    -- An identical retry cannot be a destructive shrink. Return before any
+    -- audit or write while preserving normalization and authorization.
+    if v_old_settings is not distinct from v_new_settings then
+        return;
+    end if;
+
+    -- Serialize each changed value once and reuse it for hashing and sizing.
+    v_old_text := coalesce(v_old_settings::text, '');
+    v_incoming_text := coalesce(v_new_settings::text, '');
+    v_old_hash := encode(
+        extensions.digest(v_old_text, 'sha256'),
+        'hex'
+    );
+    v_incoming_hash := encode(
+        extensions.digest(v_incoming_text, 'sha256'),
+        'hex'
+    );
+    v_old_size := length(v_old_text);
+    v_incoming_size := length(v_incoming_text);
 
     -- Plugin badge settings can be most of the blob. Removing the last plugin
     -- intentionally clears that object, which is a legitimate large shrink.
@@ -2603,7 +3258,18 @@ begin
         p_profile_id,
         p_platform,
         coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-        nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
+        nullif(
+            split_part(
+                coalesce(
+                    v_headers->>'x-forwarded-for',
+                    v_headers->>'X-Forwarded-For',
+                    ''
+                ),
+                ',',
+                1
+            ),
+            ''
+        ),
         current_setting('request.method', true),
         current_setting('request.path', true),
         case when v_old_settings is null then 0 else 1 end,
@@ -2614,7 +3280,7 @@ begin
         jsonb_build_object(
             'old_size_bytes', v_old_size,
             'incoming_size_bytes', v_incoming_size,
-            'settings_changed', v_old_settings is distinct from v_new_settings,
+            'settings_changed', true,
             'shrink_guard_checked', true,
             'allow_settings_shrink', v_allow_settings_shrink,
             'plugins_cleared', v_plugins_cleared
@@ -2843,17 +3509,7 @@ begin
 
   v_owner := public.get_sync_owner();
 
-  select count(*) into v_incoming_count
-  from jsonb_array_elements(coalesce(p_entries, '[]'::jsonb)) as e;
 
-  select encode(
-    extensions.digest(
-      coalesce(string_agg(coalesce(e->>'progress_key', e->>'content_id', ''), ',' order by coalesce(e->>'progress_key', e->>'content_id', '')), ''),
-      'sha256'
-    ),
-    'hex'
-  ) into v_payload_hash
-  from jsonb_array_elements(coalesce(p_entries, '[]'::jsonb)) as e;
 
   with normalized as (
     select
@@ -3047,41 +3703,6 @@ begin
     v_inserted_watched_count,
     v_updated_watched_count;
 
-  insert into public.watch_progress_sync_audit_logs (
-    action,
-    user_id,
-    auth_uid,
-    profile_id,
-    request_user_agent,
-    request_ip,
-    request_method,
-    request_path,
-    incoming_count,
-    normalized_count,
-    affected_count,
-    payload_hash,
-    metadata
-  ) values (
-    'push',
-    v_owner,
-    v_uid,
-    p_profile_id,
-    coalesce(v_headers->>'user-agent', v_headers->>'User-Agent'),
-    nullif(split_part(coalesce(v_headers->>'x-forwarded-for', v_headers->>'X-Forwarded-For', ''), ',', 1), ''),
-    current_setting('request.method', true),
-    current_setting('request.path', true),
-    v_incoming_count,
-    v_normalized_count,
-    v_inserted_progress_count + v_updated_progress_count,
-    v_payload_hash,
-    jsonb_build_object(
-      'inserted_progress', v_inserted_progress_count,
-      'updated_progress', v_updated_progress_count,
-      'inserted_watched_items', v_inserted_watched_count,
-      'updated_watched_items', v_updated_watched_count,
-      'dropped_invalid_entries', greatest(v_incoming_count - v_normalized_count, 0)
-    )
-  );
 end;
 $$;
 
@@ -3920,6 +4541,46 @@ WITH (autovacuum_vacuum_scale_factor='0.02', autovacuum_vacuum_threshold='100', 
 
 
 --
+-- Name: library_item_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.library_item_events (
+    event_id bigint NOT NULL,
+    user_id uuid NOT NULL,
+    profile_id integer NOT NULL,
+    operation text NOT NULL,
+    content_id text NOT NULL,
+    content_type text NOT NULL,
+    name text DEFAULT ''::text NOT NULL,
+    poster text,
+    poster_shape text DEFAULT 'POSTER'::text NOT NULL,
+    background text,
+    description text,
+    release_info text,
+    imdb_rating real,
+    genres text[] DEFAULT '{}'::text[] NOT NULL,
+    addon_base_url text,
+    added_at bigint DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT library_item_events_operation_check CHECK ((operation = ANY (ARRAY['upsert'::text, 'delete'::text])))
+);
+
+
+--
+-- Name: library_item_events_event_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.library_item_events ALTER COLUMN event_id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME public.library_item_events_event_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: plugins; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4103,6 +4764,29 @@ CREATE TABLE public.user_activity_events (
 
 
 --
+-- Name: user_session_devices; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_session_devices (
+    session_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    client_name text NOT NULL,
+    client_version text,
+    platform text NOT NULL,
+    device_name text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
+    installation_id text NOT NULL,
+    CONSTRAINT user_session_devices_client_name_length CHECK ((char_length(client_name) <= 80)),
+    CONSTRAINT user_session_devices_client_version_length CHECK ((char_length(client_version) <= 40)),
+    CONSTRAINT user_session_devices_device_name_length CHECK ((char_length(device_name) <= 160)),
+    CONSTRAINT user_session_devices_installation_id_format CHECK ((((char_length(installation_id) >= 16) AND (char_length(installation_id) <= 96)) AND (installation_id ~ '^[A-Za-z0-9_-]+$'::text))),
+    CONSTRAINT user_session_devices_official_client CHECK ((client_name = ANY (ARRAY['Nuvio Web'::text, 'Nuvio Mobile'::text, 'Nuvio TV'::text, 'Nuvio Desktop'::text]))),
+    CONSTRAINT user_session_devices_platform_length CHECK ((char_length(platform) <= 80))
+);
+
+
+--
 -- Name: watch_progress_events; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -4143,38 +4827,6 @@ CREATE SEQUENCE public.watch_progress_events_event_id_seq
 --
 
 ALTER SEQUENCE public.watch_progress_events_event_id_seq OWNED BY public.watch_progress_events.event_id;
-
-
---
--- Name: watch_progress_sync_audit_logs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.watch_progress_sync_audit_logs (
-    id uuid DEFAULT extensions.gen_random_uuid() NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    action text NOT NULL,
-    user_id uuid,
-    auth_uid uuid,
-    profile_id integer,
-    request_user_agent text,
-    request_ip text,
-    request_method text,
-    request_path text,
-    incoming_count integer,
-    normalized_count integer,
-    affected_count integer,
-    returned_count integer,
-    since_last_watched bigint,
-    since_event_id bigint,
-    requested_limit integer,
-    effective_limit integer,
-    min_event_id bigint,
-    max_event_id bigint,
-    max_last_watched bigint,
-    payload_hash text,
-    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
-    CONSTRAINT watch_progress_sync_audit_logs_action_check CHECK ((action = ANY (ARRAY['push'::text, 'delete'::text, 'pull_snapshot'::text, 'pull_delta'::text, 'get_delta_cursor'::text])))
-);
 
 
 --
@@ -4276,6 +4928,14 @@ ALTER TABLE ONLY public.home_catalog_settings
 
 ALTER TABLE ONLY public.home_catalog_settings
     ADD CONSTRAINT home_catalog_settings_user_profile_platform_unique UNIQUE (user_id, profile_id, platform);
+
+
+--
+-- Name: library_item_events library_item_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.library_item_events
+    ADD CONSTRAINT library_item_events_pkey PRIMARY KEY (event_id);
 
 
 --
@@ -4399,6 +5059,22 @@ ALTER TABLE ONLY public.user_activity_events
 
 
 --
+-- Name: user_session_devices user_session_devices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_session_devices
+    ADD CONSTRAINT user_session_devices_pkey PRIMARY KEY (session_id);
+
+
+--
+-- Name: user_session_devices user_session_devices_user_installation_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_session_devices
+    ADD CONSTRAINT user_session_devices_user_installation_unique UNIQUE (user_id, installation_id);
+
+
+--
 -- Name: user_tracker_tokens user_tracker_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4420,14 +5096,6 @@ ALTER TABLE ONLY public.watch_progress_events
 
 ALTER TABLE ONLY public.watch_progress
     ADD CONSTRAINT watch_progress_pkey PRIMARY KEY (id);
-
-
---
--- Name: watch_progress_sync_audit_logs watch_progress_sync_audit_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.watch_progress_sync_audit_logs
-    ADD CONSTRAINT watch_progress_sync_audit_logs_pkey PRIMARY KEY (id);
 
 
 --
@@ -4469,6 +5137,13 @@ CREATE INDEX idx_addons_user_id ON public.addons USING btree (user_id);
 
 
 --
+-- Name: idx_addons_user_profile; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_addons_user_profile ON public.addons USING btree (user_id, profile_id);
+
+
+--
 -- Name: idx_avatar_catalog_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -4501,6 +5176,13 @@ CREATE INDEX idx_library_items_user_profile_added_at ON public.library_items USI
 --
 
 CREATE INDEX idx_plugins_user_id ON public.plugins USING btree (user_id);
+
+
+--
+-- Name: idx_plugins_user_profile; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_plugins_user_profile ON public.plugins USING btree (user_id, profile_id);
 
 
 --
@@ -4585,6 +5267,13 @@ CREATE INDEX idx_watched_items_user_profile_watched_at ON public.watched_items U
 --
 
 CREATE INDEX idx_wp_user_profile_lastwatched ON public.watch_progress USING btree (user_id, profile_id, last_watched DESC);
+
+
+--
+-- Name: library_item_events_owner_profile_event_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX library_item_events_owner_profile_event_idx ON public.library_item_events USING btree (user_id, profile_id, event_id);
 
 
 --
@@ -4686,17 +5375,17 @@ CREATE INDEX user_activity_events_user_profile_created_idx ON public.user_activi
 
 
 --
--- Name: watch_progress_sync_audit_action_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: user_session_devices_user_last_seen_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX watch_progress_sync_audit_action_created_idx ON public.watch_progress_sync_audit_logs USING btree (action, created_at DESC);
+CREATE INDEX user_session_devices_user_last_seen_idx ON public.user_session_devices USING btree (user_id, last_seen_at DESC);
 
 
 --
--- Name: watch_progress_sync_audit_user_profile_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: library_items library_item_delta_events_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE INDEX watch_progress_sync_audit_user_profile_created_idx ON public.watch_progress_sync_audit_logs USING btree (user_id, profile_id, created_at DESC);
+CREATE TRIGGER library_item_delta_events_trigger AFTER INSERT OR DELETE OR UPDATE ON public.library_items FOR EACH ROW EXECUTE FUNCTION public.record_library_item_delta_event();
 
 
 --
@@ -4756,6 +5445,14 @@ ALTER TABLE ONLY public.collections
 
 ALTER TABLE ONLY public.profiles
     ADD CONSTRAINT fk_profiles_avatar_id FOREIGN KEY (avatar_id) REFERENCES public.avatar_catalog(id) ON DELETE SET NULL;
+
+
+--
+-- Name: library_item_events library_item_events_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.library_item_events
+    ADD CONSTRAINT library_item_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
 
 --
@@ -4836,6 +5533,22 @@ ALTER TABLE ONLY public.user_activity_events
 
 ALTER TABLE ONLY public.user_activity_events
     ADD CONSTRAINT user_activity_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_session_devices user_session_devices_session_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_session_devices
+    ADD CONSTRAINT user_session_devices_session_id_fkey FOREIGN KEY (session_id) REFERENCES auth.sessions(id) ON DELETE CASCADE;
+
+
+--
+-- Name: user_session_devices user_session_devices_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_session_devices
+    ADD CONSTRAINT user_session_devices_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id) ON DELETE CASCADE;
 
 
 --
@@ -4948,6 +5661,13 @@ CREATE POLICY "Users can read own home catalog settings" ON public.home_catalog_
 
 
 --
+-- Name: user_session_devices Users can read their own session device metadata; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Users can read their own session device metadata" ON public.user_session_devices FOR SELECT TO authenticated USING ((user_id = auth.uid()));
+
+
+--
 -- Name: home_catalog_settings Users can update own home catalog settings; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -4991,6 +5711,12 @@ ALTER TABLE public.collections ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.home_catalog_settings ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: library_item_events; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.library_item_events ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: library_items; Type: ROW SECURITY; Schema: public; Owner: -
@@ -5074,6 +5800,12 @@ ALTER TABLE public.tv_login_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_activity_events ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: user_session_devices; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_session_devices ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: user_tracker_tokens; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -5090,12 +5822,6 @@ ALTER TABLE public.watch_progress ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.watch_progress_events ENABLE ROW LEVEL SECURITY;
-
---
--- Name: watch_progress_sync_audit_logs; Type: ROW SECURITY; Schema: public; Owner: -
---
-
-ALTER TABLE public.watch_progress_sync_audit_logs ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: watched_item_events; Type: ROW SECURITY; Schema: public; Owner: -
@@ -5314,6 +6040,16 @@ GRANT ALL ON FUNCTION public.health_ping() TO service_role;
 
 
 --
+-- Name: FUNCTION list_my_sessions(); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.list_my_sessions() FROM PUBLIC;
+GRANT ALL ON FUNCTION public.list_my_sessions() TO postgres;
+GRANT ALL ON FUNCTION public.list_my_sessions() TO authenticated;
+GRANT ALL ON FUNCTION public.list_my_sessions() TO service_role;
+
+
+--
 -- Name: FUNCTION poll_tracker_tv_login_session(p_tracker text, p_code text, p_device_nonce text); Type: ACL; Schema: public; Owner: -
 --
 
@@ -5352,11 +6088,49 @@ GRANT ALL ON FUNCTION public.record_activity_event(p_event_type text, p_status t
 
 
 --
+-- Name: FUNCTION record_library_item_delta_event(); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.record_library_item_delta_event() FROM PUBLIC;
+GRANT ALL ON FUNCTION public.record_library_item_delta_event() TO postgres;
+
+
+--
 -- Name: FUNCTION record_watch_progress_delta_event(); Type: ACL; Schema: public; Owner: -
 --
 
 REVOKE ALL ON FUNCTION public.record_watch_progress_delta_event() FROM PUBLIC;
 GRANT ALL ON FUNCTION public.record_watch_progress_delta_event() TO service_role;
+
+
+--
+-- Name: FUNCTION register_current_device(p_installation_id text, p_client_name text, p_client_version text, p_platform text, p_device_name text); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.register_current_device(p_installation_id text, p_client_name text, p_client_version text, p_platform text, p_device_name text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.register_current_device(p_installation_id text, p_client_name text, p_client_version text, p_platform text, p_device_name text) TO postgres;
+GRANT ALL ON FUNCTION public.register_current_device(p_installation_id text, p_client_name text, p_client_version text, p_platform text, p_device_name text) TO authenticated;
+GRANT ALL ON FUNCTION public.register_current_device(p_installation_id text, p_client_name text, p_client_version text, p_platform text, p_device_name text) TO service_role;
+
+
+--
+-- Name: FUNCTION register_current_session(p_client_name text, p_client_version text, p_platform text, p_device_name text); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.register_current_session(p_client_name text, p_client_version text, p_platform text, p_device_name text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.register_current_session(p_client_name text, p_client_version text, p_platform text, p_device_name text) TO postgres;
+GRANT ALL ON FUNCTION public.register_current_session(p_client_name text, p_client_version text, p_platform text, p_device_name text) TO authenticated;
+GRANT ALL ON FUNCTION public.register_current_session(p_client_name text, p_client_version text, p_platform text, p_device_name text) TO service_role;
+
+
+--
+-- Name: FUNCTION revoke_my_session(p_session_id uuid); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.revoke_my_session(p_session_id uuid) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.revoke_my_session(p_session_id uuid) TO postgres;
+GRANT ALL ON FUNCTION public.revoke_my_session(p_session_id uuid) TO authenticated;
+GRANT ALL ON FUNCTION public.revoke_my_session(p_session_id uuid) TO service_role;
 
 
 --
@@ -5403,6 +6177,16 @@ GRANT ALL ON FUNCTION public.sync_current_origin_client_id() TO postgres;
 GRANT ALL ON FUNCTION public.sync_current_origin_client_id() TO anon;
 GRANT ALL ON FUNCTION public.sync_current_origin_client_id() TO authenticated;
 GRANT ALL ON FUNCTION public.sync_current_origin_client_id() TO service_role;
+
+
+--
+-- Name: FUNCTION sync_delete_library_items(p_keys jsonb, p_profile_id integer, p_origin_client_id text); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.sync_delete_library_items(p_keys jsonb, p_profile_id integer, p_origin_client_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.sync_delete_library_items(p_keys jsonb, p_profile_id integer, p_origin_client_id text) TO postgres;
+GRANT ALL ON FUNCTION public.sync_delete_library_items(p_keys jsonb, p_profile_id integer, p_origin_client_id text) TO authenticated;
+GRANT ALL ON FUNCTION public.sync_delete_library_items(p_keys jsonb, p_profile_id integer, p_origin_client_id text) TO service_role;
 
 
 --
@@ -5493,6 +6277,16 @@ GRANT ALL ON FUNCTION public.sync_export_account_backup() TO service_role;
 
 
 --
+-- Name: FUNCTION sync_get_library_delta_cursor(p_profile_id integer); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.sync_get_library_delta_cursor(p_profile_id integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.sync_get_library_delta_cursor(p_profile_id integer) TO postgres;
+GRANT ALL ON FUNCTION public.sync_get_library_delta_cursor(p_profile_id integer) TO authenticated;
+GRANT ALL ON FUNCTION public.sync_get_library_delta_cursor(p_profile_id integer) TO service_role;
+
+
+--
 -- Name: FUNCTION sync_get_watch_progress_delta_cursor(p_profile_id integer); Type: ACL; Schema: public; Owner: -
 --
 
@@ -5562,6 +6356,16 @@ GRANT SELECT ON TABLE public.library_items TO supabase_monitor;
 GRANT ALL ON FUNCTION public.sync_pull_library(p_profile_id integer, p_limit integer, p_offset integer) TO service_role;
 GRANT ALL ON FUNCTION public.sync_pull_library(p_profile_id integer, p_limit integer, p_offset integer) TO anon;
 GRANT ALL ON FUNCTION public.sync_pull_library(p_profile_id integer, p_limit integer, p_offset integer) TO authenticated;
+
+
+--
+-- Name: FUNCTION sync_pull_library_delta(p_profile_id integer, p_since_event_id bigint, p_limit integer); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.sync_pull_library_delta(p_profile_id integer, p_since_event_id bigint, p_limit integer) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.sync_pull_library_delta(p_profile_id integer, p_since_event_id bigint, p_limit integer) TO postgres;
+GRANT ALL ON FUNCTION public.sync_pull_library_delta(p_profile_id integer, p_since_event_id bigint, p_limit integer) TO authenticated;
+GRANT ALL ON FUNCTION public.sync_pull_library_delta(p_profile_id integer, p_since_event_id bigint, p_limit integer) TO service_role;
 
 
 --
@@ -5746,6 +6550,16 @@ GRANT ALL ON FUNCTION public.sync_push_library(p_items jsonb, p_profile_id integ
 GRANT ALL ON FUNCTION public.sync_push_library(p_items jsonb, p_profile_id integer, p_origin_client_id text) TO anon;
 GRANT ALL ON FUNCTION public.sync_push_library(p_items jsonb, p_profile_id integer, p_origin_client_id text) TO authenticated;
 GRANT ALL ON FUNCTION public.sync_push_library(p_items jsonb, p_profile_id integer, p_origin_client_id text) TO service_role;
+
+
+--
+-- Name: FUNCTION sync_push_library_items(p_items jsonb, p_profile_id integer, p_origin_client_id text); Type: ACL; Schema: public; Owner: -
+--
+
+REVOKE ALL ON FUNCTION public.sync_push_library_items(p_items jsonb, p_profile_id integer, p_origin_client_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.sync_push_library_items(p_items jsonb, p_profile_id integer, p_origin_client_id text) TO postgres;
+GRANT ALL ON FUNCTION public.sync_push_library_items(p_items jsonb, p_profile_id integer, p_origin_client_id text) TO authenticated;
+GRANT ALL ON FUNCTION public.sync_push_library_items(p_items jsonb, p_profile_id integer, p_origin_client_id text) TO service_role;
 
 
 --
@@ -5938,6 +6752,25 @@ GRANT SELECT ON TABLE public.collections TO supabase_monitor;
 
 
 --
+-- Name: TABLE library_item_events; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON TABLE public.library_item_events TO postgres;
+GRANT ALL ON TABLE public.library_item_events TO service_role;
+GRANT SELECT ON TABLE public.library_item_events TO supabase_monitor;
+
+
+--
+-- Name: SEQUENCE library_item_events_event_id_seq; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON SEQUENCE public.library_item_events_event_id_seq TO postgres;
+GRANT ALL ON SEQUENCE public.library_item_events_event_id_seq TO anon;
+GRANT ALL ON SEQUENCE public.library_item_events_event_id_seq TO authenticated;
+GRANT ALL ON SEQUENCE public.library_item_events_event_id_seq TO service_role;
+
+
+--
 -- Name: TABLE plugins; Type: ACL; Schema: public; Owner: -
 --
 
@@ -6014,6 +6847,15 @@ GRANT SELECT ON TABLE public.user_activity_events TO supabase_monitor;
 
 
 --
+-- Name: TABLE user_session_devices; Type: ACL; Schema: public; Owner: -
+--
+
+GRANT ALL ON TABLE public.user_session_devices TO postgres;
+GRANT ALL ON TABLE public.user_session_devices TO service_role;
+GRANT SELECT ON TABLE public.user_session_devices TO supabase_monitor;
+
+
+--
 -- Name: TABLE watch_progress_events; Type: ACL; Schema: public; Owner: -
 --
 
@@ -6028,14 +6870,6 @@ GRANT SELECT ON TABLE public.watch_progress_events TO supabase_monitor;
 GRANT ALL ON SEQUENCE public.watch_progress_events_event_id_seq TO anon;
 GRANT ALL ON SEQUENCE public.watch_progress_events_event_id_seq TO authenticated;
 GRANT ALL ON SEQUENCE public.watch_progress_events_event_id_seq TO service_role;
-
-
---
--- Name: TABLE watch_progress_sync_audit_logs; Type: ACL; Schema: public; Owner: -
---
-
-GRANT ALL ON TABLE public.watch_progress_sync_audit_logs TO service_role;
-GRANT SELECT ON TABLE public.watch_progress_sync_audit_logs TO supabase_monitor;
 
 
 --
@@ -6121,6 +6955,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE supabase_admin IN SCHEMA public GRANT SELECT O
 --
 -- PostgreSQL database dump complete
 --
+
 
 
 
