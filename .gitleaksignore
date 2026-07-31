@@ -1,0 +1,4 @@
+# The official Nuvio Cloud publishable key is intentionally public client
+# configuration. Ignore only its two original historical findings.
+7004f7ab085a8a89bbfa710c07f47dcc91cc51aa:.env.example:generic-api-key:11
+7004f7ab085a8a89bbfa710c07f47dcc91cc51aa:scripts/import-account.sh:generic-api-key:9
