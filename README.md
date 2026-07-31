@@ -73,14 +73,14 @@ settings used by Android TV, Mobile, Desktop, Web, Tizen, and webOS builds.
 | Command | Description |
 | --- | --- |
 | `./nuvio setup` | Generate secrets and configure the deployment |
-| `./nuvio up` | Start services, apply migrations, and run health checks |
+| `./nuvio up` | Start services, apply migrations, seed catalog assets, and run health checks |
 | `./nuvio down` | Stop services while preserving data |
 | `./nuvio restart` | Restart all services |
 | `./nuvio status` | Show service status |
 | `./nuvio logs [SERVICE]` | Follow logs for all services or one service |
 | `./nuvio doctor` | Check Auth, REST, Storage, and Edge Functions |
 | `./nuvio credentials` | Show the backend, client, and Studio credentials |
-| `./nuvio migrate` | Apply pending database migrations |
+| `./nuvio migrate` | Apply pending migrations and seed catalog assets |
 | `./nuvio configure` | Apply instance settings from `.env` |
 | `./nuvio backup` | Back up PostgreSQL data and local Storage files |
 | `./nuvio restore BACKUP --yes` | Restore a backup after creating a safety backup |
@@ -134,11 +134,14 @@ git pull --ff-only
 ```
 
 `./nuvio up` applies pending migrations before checking the deployment.
+It also uploads any missing bundled avatar catalog assets through the Storage
+API. User-uploaded production objects are never included in this seed.
 
 ## Data
 
 - PostgreSQL data: `volumes/db/data/`
 - Storage files: `volumes/storage/`
+- Bundled avatar seed assets: `assets/avatars/`
 - Backups: `backups/`
 - Deployment configuration and secrets: `.env`
 

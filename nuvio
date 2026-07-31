@@ -171,6 +171,50 @@ SET value = excluded.value,
 SQL
 }
 
+seed_avatar_assets() {
+    require_env
+    command -v curl >/dev/null 2>&1 || die "curl is required to seed avatar assets"
+
+    avatar_dir="$ROOT/assets/avatars"
+    [ -d "$avatar_dir" ] || die "avatar seed directory is missing: $avatar_dir"
+
+    kong_port=$(env_value KONG_HTTP_PORT)
+    service_role_key=$(env_value SERVICE_ROLE_KEY)
+    case "$kong_port" in
+        ""|*[!0-9]*) die "KONG_HTTP_PORT must be a port number" ;;
+    esac
+    [ -n "$service_role_key" ] || die "SERVICE_ROLE_KEY is not configured"
+
+    storage_url="http://127.0.0.1:$kong_port/storage/v1/object"
+    asset_count=0
+    uploaded_count=0
+
+    for asset in "$avatar_dir"/*.png; do
+        [ -f "$asset" ] || continue
+        object_name=$(basename "$asset")
+        asset_count=$((asset_count + 1))
+        object_url="$storage_url/public/avatars/$object_name"
+
+        if curl -fsSI -o /dev/null "$object_url" 2>/dev/null; then
+            continue
+        fi
+
+        curl -fsS -o /dev/null \
+            -X POST \
+            -H "apikey: $service_role_key" \
+            -H "Authorization: Bearer $service_role_key" \
+            -H "Content-Type: image/png" \
+            -H "Cache-Control: public, max-age=31536000, immutable" \
+            -H "x-upsert: true" \
+            --data-binary "@$asset" \
+            "$storage_url/avatars/$object_name"
+        uploaded_count=$((uploaded_count + 1))
+    done
+
+    [ "$asset_count" -gt 0 ] || die "avatar seed directory contains no PNG assets"
+    echo "OK  Avatar catalog assets ($asset_count present, $uploaded_count uploaded)"
+}
+
 doctor() {
     require_env
     command -v curl >/dev/null 2>&1 || die "curl is required for health checks"
@@ -347,6 +391,7 @@ SQL
     docker compose up -d --wait
     migrate
     configure_instance
+    seed_avatar_assets
     doctor
     echo "Restore complete. Safety backup: $LAST_BACKUP_PATH"
 }
@@ -358,12 +403,12 @@ Usage: ./nuvio <command>
 Commands:
   setup [--domain HOST] [--app-url URL] [--catalog-url URL]
                                           Configure a local or HTTPS deployment
-  up                                      Start, migrate, and verify the stack
+  up                                      Start, migrate, seed assets, and verify
   down                                    Stop the stack without deleting data
   restart                                 Restart the stack
   status                                  Show service status
   logs [SERVICE]                          Follow logs
-  migrate                                 Apply pending Nuvio migrations
+  migrate                                 Apply migrations and seed assets
   configure                               Apply instance settings from .env
   doctor                                  Check Auth, REST, Storage, and Functions
   credentials                             Show client and Studio connection details
@@ -384,13 +429,14 @@ case "$command" in
         docker compose up -d --wait
         migrate
         configure_instance
+        seed_avatar_assets
         doctor
         ;;
     down) require_env; require_docker; docker compose down "$@" ;;
     restart) require_env; require_docker; docker compose restart "$@" ;;
     status) require_env; require_docker; docker compose ps "$@" ;;
     logs) require_env; require_docker; docker compose logs -f "$@" ;;
-    migrate) migrate; configure_instance ;;
+    migrate) migrate; configure_instance; seed_avatar_assets ;;
     configure) configure_instance ;;
     doctor) doctor ;;
     credentials) credentials ;;

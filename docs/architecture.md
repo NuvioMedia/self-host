@@ -41,7 +41,10 @@ Database migrations live in `database/migrations/`. `./nuvio up` and
 
 Storage metadata is kept in PostgreSQL. Files are stored under
 `volumes/storage/` and served by the Storage API. The `avatars` and `covers`
-buckets are created by the Nuvio storage migration.
+buckets are created by the Nuvio storage migration. The public avatar catalog
+metadata is seeded by a database migration, and the matching bundled files in
+`assets/avatars/` are uploaded idempotently through the Storage API by
+`./nuvio up` and `./nuvio migrate`. User-uploaded objects are not bundled.
 
 ## Edge Functions
 
