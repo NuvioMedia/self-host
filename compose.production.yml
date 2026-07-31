@@ -6,7 +6,7 @@ x-logging: &default-logging
 
 services:
   account-dashboard:
-    image: ${NUVIO_ACCOUNT_DASHBOARD_IMAGE:-ghcr.io/tapframe/nuvio-account-dashboard:latest}
+    image: ${NUVIO_ACCOUNT_DASHBOARD_IMAGE:-ghcr.io/nuviomedia/nuvio-account-dashboard:latest}
     restart: unless-stopped
     logging: *default-logging
     depends_on:

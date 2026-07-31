@@ -1,0 +1,80 @@
+name: Publish account dashboard image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-account-dashboard.yml"
+      - ".env.example"
+      - "compose.production.yml"
+  workflow_dispatch:
+    inputs:
+      website_ref:
+        description: Private nuviowebsite branch, tag, or commit to build
+        required: false
+        default: master
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: nuviomedia/nuvio-account-dashboard
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out private website source
+        uses: actions/checkout@v4
+        with:
+          repository: tapframe/nuviowebsite
+          ref: ${{ inputs.website_ref || 'master' }}
+          ssh-key: ${{ secrets.NUVIO_WEBSITE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: website
+
+      - name: Read website revision
+        id: source
+        run: echo "sha=$(git -C website rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=sha-${{ steps.source.outputs.sha }}
+          labels: |
+            org.opencontainers.image.title=Nuvio Account Dashboard
+            org.opencontainers.image.description=Account management dashboard for Nuvio Self-Hosted
+            org.opencontainers.image.source=https://github.com/NuvioMedia/nuvio-self-hosted
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: website
+          file: website/Dockerfile.account-dashboard
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=account-dashboard
+          cache-to: type=gha,mode=max,scope=account-dashboard
