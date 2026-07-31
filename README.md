@@ -11,10 +11,6 @@ storage, and automatic HTTPS. Studio and Realtime are optional.
 - Git, OpenSSL, and curl (`jq` is also required for account imports)
 - A domain pointed at the server for an HTTPS deployment
 
-Use at least 4 GB RAM, 2 CPU cores, and 40 GB SSD storage. For a public server
-used by several people, 8 GB RAM, 4 cores, and 80 GB SSD storage are
-recommended.
-
 ## Quick Start
 
 Clone and start a local deployment:
