@@ -548,6 +548,10 @@ CREATE FUNCTION public.handle_new_profile_default_addons() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     AS $$
 begin
+  if current_setting('nuvio.skip_profile_defaults', true) = 'on' then
+    return new;
+  end if;
+
   if new.uses_primary_addons = false then
     insert into public.addons (user_id, profile_id, url, name, enabled, sort_order)
     select new.user_id, new.profile_index, 'https://v3-cinemeta.strem.io/manifest.json', 'Cinemeta', true, 0
@@ -4333,6 +4337,9 @@ BEGIN
     );
 END;
 $_$;
+
+ALTER FUNCTION public.sync_restore_account_backup(jsonb, text)
+    SET nuvio.skip_profile_defaults = 'on';
 
 
 --

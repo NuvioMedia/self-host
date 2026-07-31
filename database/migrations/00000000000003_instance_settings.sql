@@ -43,6 +43,10 @@ AS $$
 DECLARE
     catalog_url text := public.nuvio_default_catalog_url();
 BEGIN
+    IF current_setting('nuvio.skip_profile_defaults', true) = 'on' THEN
+        RETURN new;
+    END IF;
+
     IF new.uses_primary_addons = false THEN
         INSERT INTO public.addons (user_id, profile_id, url, name, enabled, sort_order)
         SELECT new.user_id, new.profile_index, catalog_url, 'Nuvio Catalog Addon', true, 0

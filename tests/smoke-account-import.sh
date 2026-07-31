@@ -80,6 +80,12 @@ profile_payload=$(jq -cn --arg avatar_url "$avatar_url" '{
 rpc "$access_token" sync_push_profiles "$profile_payload" >/dev/null
 rpc "$access_token" sync_push_library '{"p_items":[{"content_id":"tt-import-smoke","content_type":"movie","name":"Imported Movie","poster_shape":"POSTER","genres":["Drama"],"added_at":1760000000000}],"p_profile_id":1,"p_origin_client_id":"account-import-smoke"}' >/dev/null
 
+# Make the trigger-seeded rows observably different from fresh defaults. A
+# replace restore must preserve these exact values instead of colliding with or
+# silently retaining defaults created by the restored profile insert.
+query "update public.addons set name = 'Imported ' || name, enabled = false, sort_order = sort_order + 10 where user_id = '$user_id'" >/dev/null
+source_addons=$(query "select coalesce(jsonb_agg(jsonb_build_array(profile_id, url, name, enabled, sort_order) order by profile_id, sort_order, url), '[]'::jsonb)::text from public.addons where user_id = '$user_id'")
+
 printf '%s\n' "$password" | ./nuvio import-account \
     --source-url "$public_url" \
     --source-key "$anon_key" \
@@ -99,6 +105,11 @@ printf '%s' "$profiles" | jq -e --arg avatar_url "$avatar_url" \
     '.[] | select(.name == "Imported Profile" and .avatar_url == $avatar_url)' >/dev/null
 library=$(rpc "$local_access_token" sync_pull_library '{"p_profile_id":1,"p_limit":100,"p_offset":0}')
 printf '%s' "$library" | jq -e '.[] | select(.content_id == "tt-import-smoke" and .name == "Imported Movie")' >/dev/null
+restored_addons=$(query "select coalesce(jsonb_agg(jsonb_build_array(profile_id, url, name, enabled, sort_order) order by profile_id, sort_order, url), '[]'::jsonb)::text from public.addons where user_id = '$user_id'")
+[ "$restored_addons" = "$source_addons" ] || {
+    echo "clean restore did not preserve the exported addon set" >&2
+    exit 1
+}
 curl --fail -sS -o /dev/null -H "apikey: $anon_key" "$avatar_url"
 
 echo "OK  official account import, login recreation, data restore, and Storage copy"

@@ -54,25 +54,25 @@ api_error() {
 }
 
 write_curl_config() {
-    api_key=$1
-    bearer=$2
-    content_type=$3
+    curl_api_key=$1
+    curl_bearer=$2
+    curl_content_type=$3
 
-    validate_header_token "$api_key" "API key"
-    if [ -n "$bearer" ]; then
-        validate_header_token "$bearer" "access token"
+    validate_header_token "$curl_api_key" "API key"
+    if [ -n "$curl_bearer" ]; then
+        validate_header_token "$curl_bearer" "access token"
     fi
 
     {
         printf 'silent\n'
         printf 'show-error\n'
         printf 'connect-timeout = 15\n'
-        printf 'header = "apikey: %s"\n' "$api_key"
-        if [ -n "$bearer" ]; then
-            printf 'header = "Authorization: Bearer %s"\n' "$bearer"
+        printf 'header = "apikey: %s"\n' "$curl_api_key"
+        if [ -n "$curl_bearer" ]; then
+            printf 'header = "Authorization: Bearer %s"\n' "$curl_bearer"
         fi
-        if [ -n "$content_type" ]; then
-            printf 'header = "Content-Type: %s"\n' "$content_type"
+        if [ -n "$curl_content_type" ]; then
+            printf 'header = "Content-Type: %s"\n' "$curl_content_type"
         fi
     } > "$import_tmp/curl.conf"
 }

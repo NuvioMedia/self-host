@@ -62,6 +62,10 @@ curl --fail-with-body -sS \
 access_token=$(jq -er '.access_token' "$signup_response")
 user_id=$(jq -er '.user.id' "$signup_response")
 
+device_registered=$(rpc register_current_device '{"p_installation_id":"workflow-smoke-device-123456","p_client_name":"Nuvio Mobile","p_client_version":"smoke","p_platform":"test","p_device_name":"Workflow Smoke"}')
+printf '%s' "$device_registered" | jq -e '. == true' >/dev/null
+echo "OK  device registration"
+
 rpc sync_push_profiles '{"p_profiles":[{"profile_index":1,"name":"Smoke Profile","avatar_color_hex":"#336699","uses_primary_addons":false,"uses_primary_plugins":false}],"p_client_max_profiles":6,"p_origin_client_id":"selfhost-smoke"}' >/dev/null
 profiles=$(rpc sync_pull_profiles '{}')
 printf '%s' "$profiles" | jq -e '.[] | select(.profile_index == 1 and .name == "Smoke Profile")' >/dev/null
@@ -83,7 +87,11 @@ echo "OK  settings and collections sync"
 rpc sync_push_library '{"p_items":[{"content_id":"tt-smoke-library","content_type":"movie","name":"Smoke Movie","poster":"https://example.com/poster.jpg","poster_shape":"POSTER","background":null,"description":"Synthetic test item","release_info":"2026","imdb_rating":8.0,"genres":["Drama"],"addon_base_url":"https://example.com/addon","added_at":1760000000000}],"p_profile_id":1,"p_origin_client_id":"selfhost-smoke"}' >/dev/null
 library=$(rpc sync_pull_library '{"p_profile_id":1,"p_limit":100,"p_offset":0}')
 printf '%s' "$library" | jq -e '.[] | select(.content_id == "tt-smoke-library" and .name == "Smoke Movie")' >/dev/null
-echo "OK  library sync"
+library_cursor=$(rpc sync_get_library_delta_cursor '{"p_profile_id":1}')
+printf '%s' "$library_cursor" | jq -e 'type == "number" and . > 0' >/dev/null
+library_delta=$(rpc sync_pull_library_delta '{"p_profile_id":1,"p_since_event_id":0,"p_limit":100}')
+printf '%s' "$library_delta" | jq -e '.[] | select(.operation == "upsert" and .content_id == "tt-smoke-library" and .name == "Smoke Movie")' >/dev/null
+echo "OK  library full and delta sync"
 
 rpc sync_push_watch_progress '{"p_entries":[{"content_id":"tt-smoke-progress","content_type":"movie","video_id":"smoke-video","position":90000,"duration":100000,"last_watched":1760000000000,"progress_key":"tt-smoke-progress"}],"p_profile_id":1,"p_origin_client_id":"selfhost-smoke"}' >/dev/null
 progress=$(rpc sync_pull_watch_progress '{"p_profile_id":1,"p_since_last_watched":null,"p_limit":100}')
