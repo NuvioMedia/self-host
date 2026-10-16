@@ -78,6 +78,8 @@ assert_allowed "$anon_key" get_avatar_catalog '{}'
 assert_denied "$anon_key" cleanup_anonymous_users '{}'
 assert_denied "$anon_key" sync_patch_profile '{"p_profile_id":1}'
 assert_denied "$anon_key" sync_export_account_backup '{}'
+assert_denied "$anon_key" sync_pull_media_servers '{"p_profile_id":1}'
+assert_denied "$anon_key" approve_device_login_session '{"p_user_code":"ABC234"}'
 
 assert_allowed "$access_token" sync_pull_profiles '{}'
 assert_denied "$access_token" cleanup_anonymous_users '{}'
@@ -86,5 +88,7 @@ assert_denied "$access_token" consume_tv_login_session \
 assert_denied "$access_token" emit_sync_invalidation \
     "{\"p_user_id\":\"$user_id\",\"p_profile_id\":1,\"p_surface\":\"forbidden\",\"p_metadata\":{}}"
 assert_denied "$access_token" nuvio_default_catalog_url '{}'
+assert_denied "$access_token" sync_normalize_media_server '{"p_server":{}}'
+assert_denied "$access_token" normalize_tv_subtitle_colors '{"p_settings":{}}'
 
 echo "OK  public RPC allowlist and private helpers"
