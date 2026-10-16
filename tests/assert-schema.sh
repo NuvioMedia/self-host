@@ -17,12 +17,21 @@ assert_count() {
     echo "OK  $label ($actual)"
 }
 
-assert_count "public tables" 23 "$(query "select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'")"
-assert_count "public RLS policies" 19 "$(query "select count(*) from pg_policies where schemaname='public'")"
+if [ "${1:-full}" = "database" ]; then
+    # Bootstrap runs only the baseline and auth trigger migrations.
+    expected_tables=21
+    expected_policies=18
+else
+    expected_tables=23
+    expected_policies=19
+fi
+
+assert_count "public tables" "$expected_tables" "$(query "select count(*) from information_schema.tables where table_schema='public' and table_type='BASE TABLE'")"
+assert_count "public RLS policies" "$expected_policies" "$(query "select count(*) from pg_policies where schemaname='public'")"
 assert_count "auth trigger" 1 "$(query "select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='auth' and c.relname='users' and t.tgname='on_auth_user_created_addons'")"
 assert_count "refreshed production functions" 4 "$(query "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname in ('cleanup_profile_scoped_data_on_delete','delete_profile_scoped_data','sync_normalize_non_tracker_provider_credential','sync_seed_provider_credentials')")"
 assert_count "profile cleanup trigger" 1 "$(query "select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='profiles' and t.tgname='cleanup_profile_scoped_data_before_delete' and not t.tgisinternal")"
-assert_count "restricted table API grants" 0 "$(query "select count(*) from (values ('anon','addons'),('anon','device_login_code_attempts'),('authenticated','device_login_code_attempts'),('anon','media_servers'),('authenticated','media_servers'),('anon','plugins'),('anon','library_item_events'),('authenticated','library_item_events'),('anon','provider_credentials'),('authenticated','provider_credentials'),('anon','sync_push_audit_logs'),('authenticated','sync_push_audit_logs'),('anon','user_activity_events'),('authenticated','user_activity_events'),('anon','user_session_devices'),('authenticated','user_session_devices'),('anon','watch_progress_events'),('authenticated','watch_progress_events')) as denied(grantee, table_name) where has_table_privilege(grantee, format('public.%I', table_name), 'SELECT') or has_table_privilege(grantee, format('public.%I', table_name), 'INSERT') or has_table_privilege(grantee, format('public.%I', table_name), 'UPDATE') or has_table_privilege(grantee, format('public.%I', table_name), 'DELETE')")"
+assert_count "restricted table API grants" 0 "$(query "select count(*) from (values ('anon','addons'),('anon','plugins'),('anon','library_item_events'),('authenticated','library_item_events'),('anon','provider_credentials'),('authenticated','provider_credentials'),('anon','sync_push_audit_logs'),('authenticated','sync_push_audit_logs'),('anon','user_activity_events'),('authenticated','user_activity_events'),('anon','user_session_devices'),('authenticated','user_session_devices'),('anon','watch_progress_events'),('authenticated','watch_progress_events')) as denied(grantee, table_name) where has_table_privilege(grantee, format('public.%I', table_name), 'SELECT') or has_table_privilege(grantee, format('public.%I', table_name), 'INSERT') or has_table_privilege(grantee, format('public.%I', table_name), 'UPDATE') or has_table_privilege(grantee, format('public.%I', table_name), 'DELETE')")"
 
 if [ "${1:-full}" = "database" ]; then
     assert_count "Nuvio database migrations" 2 "$(query "select count(*) from nuvio_migrations.schema_migrations")"
@@ -36,6 +45,7 @@ else
     assert_count "anonymous RPC allowlist" 5 "$(query "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and has_function_privilege('anon', p.oid, 'EXECUTE')")"
     assert_count "authenticated client RPCs" 16 "$(query "select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname = any(array['approve_device_login_session','get_device_login_session','list_my_sessions','register_current_device','register_current_session','revoke_my_session','start_device_login_session','sync_delete_library_items','sync_get_library_delta_cursor','sync_patch_profile','sync_pull_library_delta','sync_pull_media_servers','sync_push_library_items','sync_push_media_servers','sync_push_profile_settings_blob_guarded','sync_seed_provider_credentials']) and has_function_privilege('authenticated', p.oid, 'EXECUTE')")"
     assert_count "dashboard profile patch signature" 1 "$(query "select count(*) from pg_proc where oid = to_regprocedure('public.sync_patch_profile(integer,text,text,boolean,boolean,text,boolean,text,boolean,text,boolean,text,boolean)') and pronargdefaults = 12")"
+    assert_count "restricted sync table API grants" 0 "$(query "select count(*) from (values ('anon','device_login_code_attempts'),('authenticated','device_login_code_attempts'),('anon','media_servers'),('authenticated','media_servers')) as denied(grantee, table_name) where has_table_privilege(grantee, format('public.%I', table_name), 'SELECT') or has_table_privilege(grantee, format('public.%I', table_name), 'INSERT') or has_table_privilege(grantee, format('public.%I', table_name), 'UPDATE') or has_table_privilege(grantee, format('public.%I', table_name), 'DELETE')")"
     assert_count "library logo columns" 2 "$(query "select count(*) from information_schema.columns where table_schema='public' and table_name in ('library_items','library_item_events') and column_name='logo'")"
     assert_count "library delta logo result" 1 "$(query "select count(*) from pg_proc where oid = to_regprocedure('public.sync_pull_library_delta(integer,bigint,integer)') and pg_get_function_result(oid) like '%logo text)'")"
     assert_count "TV subtitle color trigger" 1 "$(query "select count(*) from pg_trigger t join pg_class c on c.oid=t.tgrelid join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='profile_settings_blobs' and t.tgname='normalize_tv_subtitle_colors' and not t.tgisinternal")"
